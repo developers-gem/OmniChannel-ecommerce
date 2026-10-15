@@ -1,5 +1,14 @@
 import dotenv from 'dotenv';
+import path from 'path';
+
+dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
+dotenv.config({ path: path.resolve(process.cwd(), '.env') });
 dotenv.config();
+
+import dns from 'dns';
+try {
+  dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1']);
+} catch (_) {}
 
 import mongoose from 'mongoose';
 import winston from 'winston';
@@ -20,6 +29,13 @@ async function startWorker() {
   logger.info('Starting Multichannel BullMQ Background Worker...');
 
   try {
+    if (mongoUri.startsWith('mongodb+srv://')) {
+      try {
+        dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1']);
+      } catch (dnsErr) {
+        logger.warn('Could not set custom DNS servers for SRV resolution');
+      }
+    }
     await mongoose.connect(mongoUri);
     logger.info(`Worker connected to MongoDB: ${mongoUri}`);
 
