@@ -1,0 +1,251 @@
+import { Request, Response } from 'express';
+import crypto from 'crypto';
+import { ChannelConnection, WebhookEvent, Order, OrderLine, InventoryItem, ChannelProduct, ProductMapping } from '../../database/models';
+import { ChannelType, OrderFinancialStatus, OrderFulfillmentStatus } from '@multichannel/shared';
+import { decryptSecret } from '../../utils/crypto';
+import { logger } from '../../utils/logger';
+
+export class WebhooksController {
+  /**
+   * POST /api/v1/webhooks/shopify/:connectionId
+   * Handles Shopify webhook notifications (orders/create, inventory_levels/update, products/update)
+   */
+  static async handleShopify(req: any, res: Response) {
+    try {
+      const { connectionId } = req.params;
+      const hmacHeader = req.headers['x-shopify-hmac-sha256'] as string;
+      const topic = req.headers['x-shopify-topic'] as string;
+      const eventId = (req.headers['x-shopify-webhook-id'] as string) || req.body?.id?.toString() || `sh_${Date.now()}`;
+      const shopDomain = req.headers['x-shopify-shop-domain'] as string;
+
+      const connection = await ChannelConnection.findById(connectionId);
+      if (!connection || connection.channelType !== ChannelType.SHOPIFY) {
+        return res.status(404).json({ success: false, error: 'Shopify channel connection not found' });
+      }
+
+      // Verify HMAC if shared secret exists
+      const webhookSecretEnc = connection.credentials?.webhookSecret || connection.credentials?.apiSecret;
+      if (webhookSecretEnc && hmacHeader) {
+        const secret = decryptSecret(webhookSecretEnc);
+        const generatedHash = crypto
+          .createHmac('sha256', secret)
+          .update(req.rawBody || JSON.stringify(req.body))
+          .digest('base64');
+
+        if (generatedHash !== hmacHeader) {
+          logger.warn(`Shopify webhook HMAC mismatch for connection ${connectionId}`);
+          return res.status(401).json({ success: false, error: 'Invalid HMAC signature' });
+        }
+      }
+
+      // Idempotency: Deduplicate event
+      const existing = await WebhookEvent.findOne({
+        organizationId: connection.organizationId,
+        channelType: ChannelType.SHOPIFY,
+        eventId,
+      });
+
+      if (existing) {
+        return res.status(200).json({ status: 'ignored_duplicate', eventId });
+      }
+
+      // Persist event
+      const eventDoc = await WebhookEvent.create({
+        organizationId: connection.organizationId,
+        channelConnectionId: connection._id,
+        channelType: ChannelType.SHOPIFY,
+        topic: topic || 'shopify/generic',
+        eventId,
+        status: 'RECEIVED',
+        payload: req.body,
+      });
+
+      // Handle specific topics
+      if (topic === 'orders/create' || topic === 'orders/paid') {
+        await WebhooksController.processShopifyOrder(connection, req.body);
+      }
+
+      eventDoc.status = 'PROCESSED';
+      eventDoc.processedAt = new Date();
+      await eventDoc.save();
+
+      return res.status(200).json({ status: 'processed', eventId });
+    } catch (err: any) {
+      logger.error('Shopify webhook processing error:', err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  }
+
+  /**
+   * POST /api/v1/webhooks/ebay/:connectionId
+   * Handles eBay marketplace notifications
+   */
+  static async handleEbay(req: any, res: Response) {
+    try {
+      const { connectionId } = req.params;
+      const eventId = req.headers['x-ebay-notification-id'] as string || req.body?.metadata?.topic || `ebay_${Date.now()}`;
+      const topic = req.body?.metadata?.topic || req.headers['x-ebay-topic'] as string || 'ebay/notification';
+
+      const connection = await ChannelConnection.findById(connectionId);
+      if (!connection || connection.channelType !== ChannelType.EBAY) {
+        return res.status(404).json({ success: false, error: 'eBay channel connection not found' });
+      }
+
+      // Deduplicate event
+      const existing = await WebhookEvent.findOne({
+        organizationId: connection.organizationId,
+        channelType: ChannelType.EBAY,
+        eventId,
+      });
+
+      if (existing) {
+        return res.status(200).json({ status: 'ignored_duplicate', eventId });
+      }
+
+      const eventDoc = await WebhookEvent.create({
+        organizationId: connection.organizationId,
+        channelConnectionId: connection._id,
+        channelType: ChannelType.EBAY,
+        topic,
+        eventId,
+        status: 'PROCESSED',
+        payload: req.body,
+        processedAt: new Date(),
+      });
+
+      return res.status(200).json({ status: 'processed', eventId });
+    } catch (err: any) {
+      logger.error('eBay webhook processing error:', err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  }
+
+  /**
+   * POST /api/v1/webhooks/custom/:connectionId
+   * Handles custom webstore webhook notifications with HMAC-SHA256
+   */
+  static async handleCustom(req: any, res: Response) {
+    try {
+      const { connectionId } = req.params;
+      const signatureHeader = req.headers['x-webhook-signature'] as string;
+      const topic = req.headers['x-webhook-topic'] as string || 'custom/event';
+      const eventId = req.headers['x-webhook-id'] as string || req.body?.id?.toString() || `custom_${Date.now()}`;
+
+      const connection = await ChannelConnection.findById(connectionId);
+      if (!connection || connection.channelType !== ChannelType.CUSTOM_STORE) {
+        return res.status(404).json({ success: false, error: 'Custom store connection not found' });
+      }
+
+      // Verify signature if secret configured
+      const secretEnc = connection.credentials?.webhookSecret || connection.credentials?.apiKey;
+      if (secretEnc && signatureHeader) {
+        const secret = decryptSecret(secretEnc);
+        const computed = crypto
+          .createHmac('sha256', secret)
+          .update(req.rawBody || JSON.stringify(req.body))
+          .digest('hex');
+
+        if (computed !== signatureHeader) {
+          return res.status(401).json({ success: false, error: 'Invalid HMAC signature' });
+        }
+      }
+
+      // Deduplicate event
+      const existing = await WebhookEvent.findOne({
+        organizationId: connection.organizationId,
+        channelType: ChannelType.CUSTOM_STORE,
+        eventId,
+      });
+
+      if (existing) {
+        return res.status(200).json({ status: 'ignored_duplicate', eventId });
+      }
+
+      await WebhookEvent.create({
+        organizationId: connection.organizationId,
+        channelConnectionId: connection._id,
+        channelType: ChannelType.CUSTOM_STORE,
+        topic,
+        eventId,
+        status: 'PROCESSED',
+        payload: req.body,
+        processedAt: new Date(),
+      });
+
+      return res.status(200).json({ status: 'processed', eventId });
+    } catch (err: any) {
+      logger.error('Custom webhook processing error:', err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  }
+
+  private static async processShopifyOrder(connection: any, payload: any) {
+    try {
+      const externalOrderId = payload.id?.toString() || payload.order_number?.toString();
+      if (!externalOrderId) return;
+
+      const existingOrder = await Order.findOne({
+        organizationId: connection.organizationId,
+        channelConnectionId: connection._id,
+        externalOrderId,
+      });
+
+      if (existingOrder) {
+        logger.info(`Shopify order ${externalOrderId} already imported, skipping.`);
+        return;
+      }
+
+      const totalAmount = parseFloat(payload.total_price || '0');
+      const currency = payload.currency || 'USD';
+
+      const order = await Order.create({
+        organizationId: connection.organizationId,
+        channelConnectionId: connection._id,
+        channelType: ChannelType.SHOPIFY,
+        externalOrderId,
+        orderNumber: payload.name || `#${payload.order_number}`,
+        customer: {
+          name: `${payload.customer?.first_name || 'Guest'} ${payload.customer?.last_name || 'Customer'}`.trim(),
+          email: payload.customer?.email || payload.email || 'customer@example.com',
+          phone: payload.customer?.phone || '',
+        },
+        shippingAddress: {
+          name: payload.shipping_address?.name || 'Customer',
+          address1: payload.shipping_address?.address1 || '123 Main St',
+          city: payload.shipping_address?.city || 'City',
+          state: payload.shipping_address?.province || 'State',
+          postalCode: payload.shipping_address?.zip || '00000',
+          country: payload.shipping_address?.country || 'US',
+        },
+        subtotalPrice: totalAmount,
+        totalPrice: totalAmount,
+        currency,
+        financialStatus: payload.financial_status === 'paid' ? OrderFinancialStatus.PAID : OrderFinancialStatus.PENDING,
+        fulfillmentStatus: OrderFulfillmentStatus.UNFULFILLED,
+        placedAt: new Date(payload.created_at || Date.now()),
+      });
+
+      // Line items
+      if (Array.isArray(payload.line_items)) {
+        for (const item of payload.line_items) {
+          await OrderLine.create({
+            organizationId: connection.organizationId,
+            orderId: order._id,
+            externalLineId: item.id?.toString() || `line_${Date.now()}`,
+            sku: item.sku || 'UNKNOWN-SKU',
+            title: item.title || 'Product Item',
+            quantity: item.quantity || 1,
+            unitPrice: parseFloat(item.price || '0'),
+            unitCost: 0,
+            totalDiscount: 0,
+            taxAmount: 0,
+          });
+        }
+      }
+
+      logger.info(`Shopify order ${order.orderNumber} successfully processed from webhook`);
+    } catch (err: any) {
+      logger.error('Failed to process Shopify order from webhook:', err);
+    }
+  }
+}
