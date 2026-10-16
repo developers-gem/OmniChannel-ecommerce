@@ -42,9 +42,13 @@ export const CreateProductSchema = z.object({
 });
 
 export const UpdateInventorySchema = z.object({
-  trackedStock: z.number().int().nonnegative(),
+  trackedStock: z.number().int().nonnegative().optional(),
   safetyStock: z.number().int().nonnegative().optional(),
-  reason: z.string().min(1, 'Reason for adjustment is required'),
+  retailPrice: z.number().nonnegative().optional(),
+  costPrice: z.number().nonnegative().optional(),
+  shippingCharge: z.number().nonnegative().optional(),
+  status: z.string().optional(),
+  reason: z.string().optional(),
 });
 
 export const CreateChannelConnectionSchema = z.object({

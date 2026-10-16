@@ -13,6 +13,7 @@ router.use(enforceTenantIsolation);
 router.get('/', InventoryController.list);
 router.get('/movements', InventoryController.getMovements);
 router.post('/:variantId/adjust', validate(UpdateInventorySchema), InventoryController.adjust);
+router.post('/:variantId/sync-channels', InventoryController.syncChannels);
 router.put('/:variantId/allocations', InventoryController.setAllocation);
 
 export default router;

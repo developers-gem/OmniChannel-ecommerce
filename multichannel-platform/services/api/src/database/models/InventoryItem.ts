@@ -11,6 +11,9 @@ export interface IInventoryItemDocument extends Document {
   lowStockThreshold: number;
   location: string;
   version: number;
+  shippingCharge?: number;
+  isDataChanged?: boolean;
+  lastSyncedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -67,6 +70,17 @@ const InventoryItemSchema = new Schema<IInventoryItemDocument>(
     version: {
       type: Number,
       default: 0,
+    },
+    shippingCharge: {
+      type: Number,
+      default: 0,
+    },
+    isDataChanged: {
+      type: Boolean,
+      default: false,
+    },
+    lastSyncedAt: {
+      type: Date,
     },
   },
   {

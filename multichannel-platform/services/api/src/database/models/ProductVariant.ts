@@ -15,6 +15,9 @@ export interface IProductVariantDocument extends Document {
   compareAtPrice?: number;
   weight?: number;
   weightUnit?: string;
+  shippingCharge?: number;
+  isDataChanged?: boolean;
+  lastSyncedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -76,6 +79,17 @@ const ProductVariantSchema = new Schema<IProductVariantDocument>(
       type: String,
       enum: ['g', 'kg', 'oz', 'lb'],
       default: 'lb',
+    },
+    shippingCharge: {
+      type: Number,
+      default: 0,
+    },
+    isDataChanged: {
+      type: Boolean,
+      default: false,
+    },
+    lastSyncedAt: {
+      type: Date,
     },
   },
   {

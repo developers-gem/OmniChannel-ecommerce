@@ -18,6 +18,7 @@ export interface ICanonicalProductDocument extends Document {
   status: ProductStatus;
   defaultCostPrice: number;
   defaultRetailPrice: number;
+  shippingCharge?: number;
   totalVariants: number;
   createdAt: Date;
   updatedAt: Date;
@@ -105,6 +106,10 @@ const CanonicalProductSchema = new Schema<ICanonicalProductDocument>(
       default: 0,
     },
     defaultRetailPrice: {
+      type: Number,
+      default: 0,
+    },
+    shippingCharge: {
       type: Number,
       default: 0,
     },
