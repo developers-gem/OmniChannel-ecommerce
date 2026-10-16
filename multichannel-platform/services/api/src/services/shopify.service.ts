@@ -135,6 +135,40 @@ export class ShopifyService {
   }
 
   /**
+   * Update an existing product on Shopify
+   */
+  static async updateProduct(
+    domain: string,
+    token: string,
+    shopifyProductId: string,
+    product: {
+      title?: string;
+      description?: string;
+      brand?: string;
+      category?: string;
+      tags?: string[];
+      images?: string[];
+    }
+  ): Promise<any> {
+    const client = this.getClient(domain, token);
+    const payload: any = {
+      product: {
+        id: shopifyProductId,
+        ...(product.title ? { title: product.title } : {}),
+        ...(product.description !== undefined ? { body_html: product.description } : {}),
+        ...(product.brand ? { vendor: product.brand } : {}),
+        ...(product.category ? { product_type: product.category } : {}),
+        ...(product.tags ? { tags: product.tags.join(', ') } : {}),
+      },
+    };
+    if (product.images && product.images.length > 0) {
+      payload.product.images = product.images.map((src) => ({ src }));
+    }
+    const res = await client.put(`/products/${shopifyProductId}.json`, payload);
+    return res.data?.product;
+  }
+
+  /**
    * Push and publish a new canonical product to Shopify
    */
   static async publishProduct(

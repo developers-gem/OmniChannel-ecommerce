@@ -23,6 +23,7 @@ import {
 import { runInTransaction } from '../../database';
 import { logger } from '../../utils/logger';
 import { ShopifyService } from '../../services/shopify.service';
+import { EbayService } from '../../services/ebay.service';
 
 export class ProductsController {
   // GET /api/v1/products - List canonical products with pagination, search, and variant count
@@ -448,7 +449,7 @@ export class ProductsController {
   static async publish(req: Request, res: Response) {
     try {
       const { id } = req.params;
-      const { channelConnectionId } = req.body;
+      const { channelConnectionId, forceRepublish } = req.body;
 
       const product = await CanonicalProduct.findOne({
         _id: id,
@@ -497,6 +498,30 @@ export class ProductsController {
         });
       }
 
+      // Check if product is already mapped to the target channel (avoid duplicate pushing/mapping)
+      if (channelConnectionId && !forceRepublish) {
+        const existingMappings = await ProductMapping.find({
+          organizationId: req.tenantId,
+          canonicalProductId: product._id,
+          channelConnectionId: connections[0]._id,
+          status: MappingStatus.MAPPED,
+        });
+
+        if (existingMappings.length > 0) {
+          return res.json({
+            success: true,
+            data: {
+              alreadyMapped: true,
+              channelId: connections[0]._id,
+              channelName: connections[0].name,
+              channelType: connections[0].channelType,
+              existingMappingsCount: existingMappings.length,
+              message: `Product "${product.title}" is already mapped to ${connections[0].name} (${connections[0].channelType}). Do you want to push again?`,
+            },
+          });
+        }
+      }
+
       const results: any[] = [];
 
       for (const conn of connections) {
@@ -520,17 +545,83 @@ export class ProductsController {
               };
             });
 
-            const shopifyProduct = await ShopifyService.publishProduct(domain, token, {
-              title: product.title,
-              description: product.description,
-              brand: product.brand,
-              category: product.category,
-              tags: product.tags,
-              images: (product.images || []).map((img: any) => (typeof img === 'string' ? img : img.url)),
-              variants: variantPayload,
-            });
+            // Check if existing mapping with Shopify product exists to update rather than create duplicate
+            const existingMapping = await ProductMapping.findOne({
+              organizationId: req.tenantId,
+              canonicalProductId: product._id,
+              channelConnectionId: conn._id,
+            }).populate('channelProductId');
 
-            // For each created variant on Shopify, create ChannelProduct and ProductMapping
+            const existingChProd: any = existingMapping?.channelProductId;
+            let shopifyProduct: any = null;
+
+            if (existingChProd?.externalProductId) {
+              try {
+                shopifyProduct = await ShopifyService.updateProduct(
+                  domain,
+                  token,
+                  existingChProd.externalProductId,
+                  {
+                    title: product.title,
+                    description: product.description,
+                    brand: product.brand,
+                    category: product.category,
+                    tags: product.tags,
+                    images: (product.images || []).map((img: any) =>
+                      typeof img === 'string' ? img : img.url
+                    ),
+                  }
+                );
+              } catch (updErr: any) {
+                logger.warn(
+                  `Could not update existing Shopify product ${existingChProd.externalProductId}, falling back to publish: ${updErr.message}`
+                );
+              }
+            }
+
+            if (!shopifyProduct) {
+              shopifyProduct = await ShopifyService.publishProduct(domain, token, {
+                title: product.title,
+                description: product.description,
+                brand: product.brand,
+                category: product.category,
+                tags: product.tags,
+                images: (product.images || []).map((img: any) =>
+                  typeof img === 'string' ? img : img.url
+                ),
+                variants: variantPayload,
+              });
+            } else {
+              // Also update variant price & inventory for existing Shopify product
+              for (let i = 0; i < variants.length; i++) {
+                const srcVariant = variants[i];
+                const shVariant = shopifyProduct.variants?.[i] || shopifyProduct.variants?.[0];
+                if (shVariant) {
+                  if (typeof srcVariant.retailPrice === 'number') {
+                    await ShopifyService.updateVariantPrice(
+                      domain,
+                      token,
+                      String(shVariant.id),
+                      srcVariant.retailPrice
+                    );
+                  }
+                  const inv = inventoryItems.find(
+                    (invItem) =>
+                      invItem.canonicalVariantId.toString() === srcVariant._id.toString()
+                  );
+                  if (shVariant.inventory_item_id && inv) {
+                    await ShopifyService.setInventoryLevel(
+                      domain,
+                      token,
+                      String(shVariant.inventory_item_id),
+                      inv.trackedStock || 0
+                    );
+                  }
+                }
+              }
+            }
+
+            // For each created/updated variant on Shopify, create/update ChannelProduct and ProductMapping
             const createdMappings: any[] = [];
             for (let i = 0; i < variants.length; i++) {
               const platformVariant = variants[i];
@@ -562,7 +653,8 @@ export class ProductsController {
                 const mapping = await ProductMapping.findOneAndUpdate(
                   {
                     organizationId: req.tenantId,
-                    channelProductId: channelProd._id,
+                    canonicalVariantId: platformVariant._id,
+                    channelConnectionId: conn._id,
                   },
                   {
                     canonicalProductId: product._id,
@@ -603,6 +695,107 @@ export class ProductsController {
               error: pubErr.response?.data?.errors || pubErr.message,
             });
           }
+        } else if (conn.channelType === ChannelType.EBAY) {
+          try {
+            const { host, token } = EbayService.getCredentials(conn);
+            const createdMappings: any[] = [];
+
+            for (let i = 0; i < variants.length; i++) {
+              const platformVariant = variants[i];
+              const inv = inventoryItems.find(
+                (invItem) =>
+                  invItem.canonicalVariantId.toString() === platformVariant._id.toString()
+              );
+              const variantTitle =
+                variants.length === 1
+                  ? product.title
+                  : `${product.title} - ${platformVariant.title}`;
+              const stock = inv?.trackedStock || 0;
+              const images = (product.images || [])
+                .map((img: any) => (typeof img === 'string' ? img : img.url))
+                .filter(Boolean);
+
+              const success = await EbayService.setInventoryItem(host, token, platformVariant.sku, {
+                title: variantTitle,
+                description: product.description || product.title,
+                quantity: stock,
+                price: platformVariant.retailPrice,
+                images,
+              });
+
+              if (success) {
+                const channelProd = await ChannelProduct.findOneAndUpdate(
+                  {
+                    organizationId: req.tenantId,
+                    channelConnectionId: conn._id,
+                    sku: platformVariant.sku,
+                  },
+                  {
+                    channelType: ChannelType.EBAY,
+                    externalProductId: platformVariant.sku,
+                    externalVariantId: platformVariant.sku,
+                    title: variantTitle,
+                    sku: platformVariant.sku,
+                    barcode: platformVariant.barcode || '',
+                    price: platformVariant.retailPrice,
+                    inventoryQuantity: stock,
+                    status: ChannelProductStatus.ACTIVE,
+                    syncStatus: SyncStatus.SYNCED,
+                    lastSyncedAt: new Date(),
+                    rawPayload: {
+                      sku: platformVariant.sku,
+                      title: variantTitle,
+                      price: platformVariant.retailPrice,
+                      quantity: stock,
+                    },
+                  },
+                  { upsert: true, new: true }
+                );
+
+                const mapping = await ProductMapping.findOneAndUpdate(
+                  {
+                    organizationId: req.tenantId,
+                    canonicalVariantId: platformVariant._id,
+                    channelConnectionId: conn._id,
+                  },
+                  {
+                    canonicalProductId: product._id,
+                    canonicalVariantId: platformVariant._id,
+                    channelConnectionId: conn._id,
+                    channelProductId: channelProd._id,
+                    channelType: ChannelType.EBAY,
+                    mappingConfidence: MappingConfidence.EXACT_SKU,
+                    syncPrice: true,
+                    syncInventory: true,
+                    status: MappingStatus.MAPPED,
+                  },
+                  { upsert: true, new: true }
+                );
+
+                createdMappings.push(mapping);
+              }
+            }
+
+            conn.lastSyncAt = new Date();
+            await conn.save();
+
+            results.push({
+              channelId: conn._id,
+              channelName: conn.name,
+              channelType: conn.channelType,
+              status: 'SUCCESS',
+              mappingsCount: createdMappings.length,
+            });
+          } catch (pubErr: any) {
+            logger.error(`Failed to publish product ${product.masterSku} to ${conn.name}:`, pubErr);
+            results.push({
+              channelId: conn._id,
+              channelName: conn.name,
+              channelType: conn.channelType,
+              status: 'FAILED',
+              error: pubErr.response?.data?.errors || pubErr.message,
+            });
+          }
         }
       }
 
@@ -621,9 +814,14 @@ export class ProductsController {
       return res.json({
         success: true,
         data: {
+          alreadyMapped: false,
           productId: product._id,
           title: product.title,
           results,
+          message: `Successfully pushed "${product.title}" to ${results
+            .filter((r) => r.status === 'SUCCESS')
+            .map((r) => r.channelName)
+            .join(', ')}!`,
         },
       });
     } catch (error: any) {
