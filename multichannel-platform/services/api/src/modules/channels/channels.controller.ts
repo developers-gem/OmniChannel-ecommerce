@@ -5,6 +5,7 @@ import { ChannelType, ChannelStatus } from '@multichannel/shared';
 import { encryptSecret, decryptSecret, redactSecrets } from '../../utils/crypto';
 import { validateSafeUrl } from '../../utils/ssrf';
 import { logger } from '../../utils/logger';
+import { EbayService } from '../../services/ebay.service';
 
 export class ChannelsController {
   // GET /api/v1/channels - List all store connections with status and listing counts
@@ -134,6 +135,34 @@ export class ChannelsController {
               },
             });
           }
+        }
+      }
+
+      // Validate eBay stores live
+      if (channelType === ChannelType.EBAY) {
+        const domain = config?.storeDomain || config?.baseUrl || 'api.sandbox.ebay.com';
+        const host = EbayService.resolveHost(domain);
+        config.storeDomain = host;
+        config.baseUrl = host;
+
+        const token = credentials?.accessToken || credentials?.apiKey;
+        if (!token || token.trim().length < 10) {
+          return res.status(400).json({
+            success: false,
+            error: { message: 'A valid eBay User OAuth Token is required.' },
+          });
+        }
+
+        try {
+          await EbayService.validateCredentials(host, token.trim());
+          logger.info(`eBay handshake verified for store ${name} on ${host}`);
+        } catch (ebayErr: any) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              message: ebayErr.message || 'eBay Authentication Failed: The provided OAuth User Token is invalid or expired.',
+            },
+          });
         }
       }
 
@@ -291,6 +320,16 @@ export class ChannelsController {
               message = `Shopify Error: ${shopErr.response?.data?.errors || shopErr.message}`;
             }
           }
+        }
+      } else if (channelType === ChannelType.EBAY) {
+        try {
+          const { host, token } = EbayService.getCredentials(connection);
+          await EbayService.validateCredentials(host, token);
+          isHealthy = true;
+          message = `Connected & verified with eBay API (${host})`;
+        } catch (ebayErr: any) {
+          isHealthy = false;
+          message = ebayErr.message || 'eBay token is invalid or expired';
         }
       } else if (channelType === ChannelType.CUSTOM_STORE) {
         const baseUrl = connection.config?.baseUrl;

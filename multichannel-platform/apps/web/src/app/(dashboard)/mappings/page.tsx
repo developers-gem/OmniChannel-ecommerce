@@ -24,12 +24,33 @@ export default function MappingPage() {
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<'mapped' | 'suggestions'>('mapped');
   const [showInfoBanner, setShowInfoBanner] = useState(true);
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [confirmReimportChannel, setConfirmReimportChannel] = useState<{
+    id: string;
+    name: string;
+    channelType: string;
+    count: number;
+  } | null>(null);
+  const [importNotification, setImportNotification] = useState<{
+    type: 'success' | 'error' | 'info';
+    message: string;
+  } | null>(null);
+  const [importingChannelId, setImportingChannelId] = useState<string | null>(null);
 
   // Fetch mapped listings
   const { data: mappingsData, isLoading: mappingsLoading } = useQuery({
     queryKey: ['product-mappings'],
     queryFn: async () => {
       const res: any = await api.get('/mappings');
+      return res.data;
+    },
+  });
+
+  // Fetch connected channels
+  const { data: channelsData, isLoading: channelsLoading } = useQuery({
+    queryKey: ['channel-connections'],
+    queryFn: async () => {
+      const res: any = await api.get('/channels');
       return res.data;
     },
   });
@@ -91,16 +112,62 @@ export default function MappingPage() {
     },
   });
 
-  // Import directly to master catalog
+  // Import directly to master catalog with channel & re-import support
   const importToCanonicalMutation = useMutation({
-    mutationFn: async () => {
-      const res: any = await api.post('/sync/import-to-canonical', {});
+    mutationFn: async ({
+      channelConnectionId,
+      forceReimport = false,
+    }: {
+      channelConnectionId?: string;
+      forceReimport?: boolean;
+    }) => {
+      setImportingChannelId(channelConnectionId || 'all');
+      const res: any = await api.post('/sync/import-to-canonical', {
+        channelConnectionId,
+        forceReimport,
+      });
       return res.data;
     },
-    onSuccess: () => {
+    onSuccess: (data: any, variables) => {
+      setImportingChannelId(null);
       queryClient.invalidateQueries({ queryKey: ['product-mappings'] });
       queryClient.invalidateQueries({ queryKey: ['mapping-suggestions'] });
       queryClient.invalidateQueries({ queryKey: ['canonical-products'] });
+      queryClient.invalidateQueries({ queryKey: ['channel-connections'] });
+
+      const info = data?.data || data;
+      // If products are already imported and user didn't force reimport, ask them if they want to import again!
+      if (info?.alreadyImported && !variables.forceReimport) {
+        const found = (channelsData || []).find(
+          (c: any) => (c._id?._id || c._id?.id || c._id) === variables.channelConnectionId
+        );
+        setConfirmReimportChannel({
+          id: variables.channelConnectionId || '',
+          name: found?.name || info.channelName || 'Store',
+          channelType: found?.channelType || info.channelType || 'Sales Channel',
+          count: info.alreadyImportedCount || 0,
+        });
+      } else {
+        setConfirmReimportChannel(null);
+        setIsImportModalOpen(false);
+        setImportNotification({
+          type: 'success',
+          message:
+            info?.message ||
+            (variables.forceReimport
+              ? 'Successfully re-synchronized and refreshed products!'
+              : 'Successfully imported products!'),
+        });
+        setTimeout(() => setImportNotification(null), 8000);
+      }
+    },
+    onError: (err: any) => {
+      setImportingChannelId(null);
+      setImportNotification({
+        type: 'error',
+        message: err.message || 'Failed to import products from channel',
+      });
+      setTimeout(() => setImportNotification(null), 8000);
     },
   });
 
@@ -147,21 +214,18 @@ export default function MappingPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-white">Product Listing Mapping</h1>
           <p className="text-xs text-slate-400 mt-1">
-            Map external Shopify listings to platform master variants for two-way inventory and price sync
+            Map external listings from Shopify, eBay, and custom channels to platform master variants for two-way sync
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
           <button
-            onClick={() => importToCanonicalMutation.mutate()}
-            disabled={importToCanonicalMutation.isPending}
-            className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-3.5 py-2.5 rounded-xl shadow-lg shadow-emerald-600/20 transition disabled:opacity-50"
-            title="Import all Shopify products into the platform master catalog"
+            onClick={() => setIsImportModalOpen(true)}
+            className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-3.5 py-2.5 rounded-xl shadow-lg shadow-emerald-600/20 transition"
+            title="Import product listings from connected channels (Shopify, eBay, Custom)"
           >
-            <ArrowDownToLine className={`w-3.5 h-3.5 ${importToCanonicalMutation.isPending ? 'animate-bounce' : ''}`} />
-            <span>
-              {importToCanonicalMutation.isPending ? 'Importing...' : 'Import All from Shopify'}
-            </span>
+            <ArrowDownToLine className="w-3.5 h-3.5" />
+            <span>Import from Channels</span>
           </button>
 
           {activeTab === 'mapped' && mappingsData && mappingsData.length > 0 && (
@@ -192,6 +256,32 @@ export default function MappingPage() {
           )}
         </div>
       </div>
+
+      {/* Notification Banner */}
+      {importNotification && (
+        <div
+          className={`p-4 rounded-xl flex items-center justify-between gap-3 text-xs border shadow-lg ${
+            importNotification.type === 'success'
+              ? 'bg-emerald-950/80 border-emerald-800 text-emerald-200'
+              : 'bg-red-950/80 border-red-800 text-red-200'
+          }`}
+        >
+          <div className="flex items-center gap-2.5">
+            {importNotification.type === 'success' ? (
+              <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+            ) : (
+              <AlertCircle className="w-5 h-5 text-red-400 shrink-0" />
+            )}
+            <span className="font-medium">{importNotification.message}</span>
+          </div>
+          <button
+            onClick={() => setImportNotification(null)}
+            className="text-slate-400 hover:text-white text-xs px-2 py-1"
+          >
+            &times;
+          </button>
+        </div>
+      )}
 
       {/* Educational Banner */}
       {showInfoBanner && (
@@ -277,8 +367,8 @@ export default function MappingPage() {
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-800/60 text-slate-400 uppercase text-[10px] tracking-wider font-semibold border-b border-slate-800">
                 <tr>
-                  <th className="py-3 px-4">Channel Listing (Shopify)</th>
-                  <th className="py-3 px-4">Sales Channel</th>
+                  <th className="py-3 px-4">Channel Listing</th>
+                  <th className="py-3 px-4">Sales Channel (Source)</th>
                   <th className="py-3 px-4">Mapped Canonical Variant</th>
                   <th className="py-3 px-4 text-center">Confidence</th>
                   <th className="py-3 px-4 text-center">Sync Rules</th>
@@ -299,14 +389,32 @@ export default function MappingPage() {
                         <div className="font-semibold text-slate-200">
                           {m.channelProductId?.title || 'External Listing'}
                         </div>
-                        <span className="text-[10px] font-mono text-slate-500">
-                          SKU: {m.channelProductId?.sku || 'N/A'}
-                        </span>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-[10px] font-mono text-slate-400">
+                            SKU: {m.channelProductId?.sku || 'N/A'}
+                          </span>
+                          {m.channelProductId?.price !== undefined && (
+                            <span className="text-[10px] text-slate-500 font-mono">
+                              &bull; ${m.channelProductId.price.toFixed(2)}
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="py-3.5 px-4">
-                        <span className="bg-slate-800 text-slate-300 px-2 py-0.5 rounded text-[10px] font-bold">
-                          {m.channelType}
-                        </span>
+                        <div className="flex flex-col gap-1">
+                          <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold w-fit ${
+                            m.channelType === 'SHOPIFY'
+                              ? 'bg-emerald-950 text-emerald-400 border border-emerald-800/60'
+                              : m.channelType === 'EBAY'
+                              ? 'bg-amber-950 text-amber-400 border border-amber-800/60'
+                              : 'bg-purple-950 text-purple-400 border border-purple-800/60'
+                          }`}>
+                            <span>{m.channelType === 'SHOPIFY' ? '🛍️ Shopify' : m.channelType === 'EBAY' ? '🏷️ eBay' : '🌐 Custom'}</span>
+                          </span>
+                          <span className="text-[11px] font-medium text-slate-300">
+                            {m.channelConnectionId?.name || (typeof m.channelConnectionId === 'string' ? m.channelConnectionId : 'Default Store')}
+                          </span>
+                        </div>
                       </td>
                       <td className="py-3.5 px-4">
                         <div className="font-bold text-brand-400 font-mono">
@@ -350,7 +458,7 @@ export default function MappingPage() {
                 ) : (
                   <tr>
                     <td colSpan={6} className="py-12 text-center text-slate-500">
-                      No active product mappings found. Switch to Suggestions or click "Import All from Shopify" to link your catalog!
+                      No active product mappings found. Switch to Suggestions or click "Import from Channels" to link your catalog!
                     </td>
                   </tr>
                 )}
@@ -458,6 +566,157 @@ export default function MappingPage() {
               </p>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Channel Import Modal */}
+      {isImportModalOpen && !confirmReimportChannel && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-xl w-full p-6 shadow-2xl relative">
+            <div className="flex items-start justify-between mb-4">
+              <div>
+                <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                  <ArrowDownToLine className="w-5 h-5 text-emerald-400" />
+                  <span>Import Products from Channels</span>
+                </h2>
+                <p className="text-xs text-slate-400 mt-1">
+                  Choose a connected sales channel to import products into your Master Catalog. If you added new products on Shopify or eBay, only those new products will be imported.
+                </p>
+              </div>
+              <button
+                onClick={() => setIsImportModalOpen(false)}
+                className="text-slate-500 hover:text-slate-300 text-sm px-2 py-1 rounded"
+              >
+                &times;
+              </button>
+            </div>
+
+            <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
+              {channelsLoading ? (
+                <div className="py-8 text-center text-xs text-slate-500">
+                  Loading connected channels...
+                </div>
+              ) : channelsData && channelsData.length > 0 ? (
+                channelsData.map((channel: any) => {
+                  const chId = channel._id?._id || channel._id?.id || channel._id;
+                  const isImporting = importingChannelId === chId;
+
+                  return (
+                    <div
+                      key={chId}
+                      className="bg-slate-800/50 hover:bg-slate-800 border border-slate-700/60 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 transition"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-center text-lg shrink-0">
+                          {channel.channelType === 'SHOPIFY' && '🛍️'}
+                          {channel.channelType === 'EBAY' && '🏷️'}
+                          {channel.channelType !== 'SHOPIFY' && channel.channelType !== 'EBAY' && '🌐'}
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-sm text-white">
+                              {channel.name}
+                            </span>
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              channel.channelType === 'SHOPIFY'
+                                ? 'bg-emerald-950 text-emerald-400 border border-emerald-800/60'
+                                : channel.channelType === 'EBAY'
+                                ? 'bg-amber-950 text-amber-400 border border-amber-800/60'
+                                : 'bg-purple-950 text-purple-400 border border-purple-800/60'
+                            }`}>
+                              {channel.channelType}
+                            </span>
+                          </div>
+                          <span className="text-[11px] text-slate-400 mt-0.5 block">
+                            {channel.totalListings || 0} listings in channel &bull; {channel.totalMapped || 0} mapped
+                          </span>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() =>
+                          importToCanonicalMutation.mutate({
+                            channelConnectionId: chId,
+                            forceReimport: false,
+                          })
+                        }
+                        disabled={isImporting}
+                        className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-4 py-2.5 rounded-xl shadow-lg shadow-emerald-600/20 transition disabled:opacity-50 shrink-0 w-full sm:w-auto justify-center"
+                      >
+                        <ArrowDownToLine className={`w-3.5 h-3.5 ${isImporting ? 'animate-bounce' : ''}`} />
+                        <span>{isImporting ? 'Importing...' : 'Import from this Channel'}</span>
+                      </button>
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="bg-slate-800/40 border border-slate-700/60 rounded-xl p-8 text-center">
+                  <p className="text-xs text-slate-400 mb-3">No active storefronts connected yet.</p>
+                  <a
+                    href="/channels"
+                    className="inline-flex items-center gap-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold px-3.5 py-2 rounded-xl transition"
+                  >
+                    Go to Channel Integrations
+                  </a>
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end pt-4 mt-4 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setIsImportModalOpen(false)}
+                className="px-4 py-2 rounded-xl text-xs text-slate-400 hover:text-white transition"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Products Already Imported Confirmation Modal */}
+      {confirmReimportChannel && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl relative">
+            <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 mb-4">
+              <RefreshCw className="w-6 h-6" />
+            </div>
+
+            <h3 className="text-base font-bold text-white mb-2">
+              Products are already imported
+            </h3>
+            <p className="text-xs text-slate-300 leading-relaxed mb-3">
+              Products from <strong className="text-white">{confirmReimportChannel.name}</strong> ({confirmReimportChannel.count} products) are already imported in your Master Catalog.
+            </p>
+            <div className="bg-slate-800/60 border border-slate-700/60 rounded-xl p-3 text-[11px] text-slate-400 mb-5 leading-relaxed">
+              <strong className="text-slate-200 block mb-0.5">Incremental Import:</strong>
+              Do you want to import again? This will re-synchronize latest details. If you added new products on {confirmReimportChannel.name}, only those new products will be added to the catalog without duplicating existing items.
+            </div>
+
+            <div className="flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setConfirmReimportChannel(null)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-400 hover:text-white transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  importToCanonicalMutation.mutate({
+                    channelConnectionId: confirmReimportChannel.id,
+                    forceReimport: true,
+                  })
+                }
+                disabled={importToCanonicalMutation.isPending}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-4 py-2.5 rounded-xl shadow-lg shadow-emerald-600/30 transition disabled:opacity-50"
+              >
+                {importToCanonicalMutation.isPending ? 'Importing Again...' : 'Import Again'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

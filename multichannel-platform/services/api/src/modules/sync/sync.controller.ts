@@ -25,6 +25,7 @@ import {
 import { decryptSecret } from '../../utils/crypto';
 import { logger } from '../../utils/logger';
 import { ShopifyService } from '../../services/shopify.service';
+import { EbayService } from '../../services/ebay.service';
 
 export class SyncController {
   // GET /api/v1/sync/jobs - List synchronization jobs and status
@@ -151,11 +152,44 @@ export class SyncController {
                 } catch (fetchErr: any) {
                   logger.error(`Failed to fetch Shopify products for ${conn.name}: ${fetchErr.message}`);
                 }
+              } else if (conn.channelType === ChannelType.EBAY) {
+                try {
+                  const { host, token } = EbayService.getCredentials(conn);
+                  const items = await EbayService.getInventoryItems(host, token, 100);
+                  for (const item of items) {
+                    await ChannelProduct.findOneAndUpdate(
+                      {
+                        organizationId: req.tenantId,
+                        channelConnectionId: conn._id,
+                        externalProductId: item.sku,
+                      },
+                      {
+                        channelType: ChannelType.EBAY,
+                        title: item.title,
+                        sku: item.sku ? item.sku.toUpperCase().trim() : undefined,
+                        barcode: '',
+                        price: item.price || 0,
+                        inventoryQuantity: item.quantity || 0,
+                        status: ChannelProductStatus.ACTIVE,
+                        syncStatus: SyncStatus.SYNCED,
+                        lastSyncedAt: new Date(),
+                        rawPayload: { ebayItem: item.raw, images: item.images, description: item.description },
+                      },
+                      { upsert: true, new: true }
+                    );
+                    syncedCount++;
+                  }
+                  conn.lastSyncAt = new Date();
+                  await conn.save();
+                  logger.info(`Successfully imported ${syncedCount} eBay products for ${conn.name}`);
+                } catch (ebayErr: any) {
+                  logger.error(`Failed to fetch eBay products for ${conn.name}: ${ebayErr.message}`);
+                }
               }
             }
           }
 
-          // 2. INVENTORY_SYNC: Push platform stock levels to Shopify
+          // 2. INVENTORY_SYNC: Push platform stock levels to external channels
           else if (jobType === SyncJobType.INVENTORY_SYNC) {
             const mappingsQuery: any = {
               organizationId: req.tenantId,
@@ -203,12 +237,35 @@ export class SyncController {
                 } catch (invErr: any) {
                   logger.warn(`Failed to sync inventory for variant ${variant.sku}: ${invErr.message}`);
                 }
+              } else if (conn?.channelType === ChannelType.EBAY && chProd && variant) {
+                try {
+                  const { host, token } = EbayService.getCredentials(conn);
+                  const invItem = await InventoryItem.findOne({
+                    organizationId: req.tenantId,
+                    canonicalVariantId: variant._id,
+                  });
+                  if (invItem && chProd.sku) {
+                    const success = await EbayService.setInventoryItem(host, token, chProd.sku, {
+                      title: chProd.title,
+                      quantity: invItem.availableToAllocate,
+                      price: variant.retailPrice,
+                    });
+                    if (success) {
+                      chProd.inventoryQuantity = invItem.availableToAllocate;
+                      chProd.lastSyncedAt = new Date();
+                      await chProd.save();
+                      syncedCount++;
+                    }
+                  }
+                } catch (ebayInvErr: any) {
+                  logger.warn(`Failed to sync eBay inventory for SKU ${chProd.sku}: ${ebayInvErr.message}`);
+                }
               }
             }
             logger.info(`Inventory sync finished. Synced ${syncedCount} items.`);
           }
 
-          // 3. PRICE_SYNC: Push platform prices to Shopify
+          // 3. PRICE_SYNC: Push platform prices to external channels
           else if (jobType === SyncJobType.PRICE_SYNC) {
             const mappingsQuery: any = {
               organizationId: req.tenantId,
@@ -247,6 +304,23 @@ export class SyncController {
                   }
                 } catch (priceErr: any) {
                   logger.warn(`Failed to sync price for variant ${variant.sku}: ${priceErr.message}`);
+                }
+              } else if (conn?.channelType === ChannelType.EBAY && chProd?.sku && variant) {
+                try {
+                  const { host, token } = EbayService.getCredentials(conn);
+                  const success = await EbayService.setInventoryItem(host, token, chProd.sku, {
+                    title: chProd.title,
+                    quantity: chProd.inventoryQuantity || 0,
+                    price: variant.retailPrice,
+                  });
+                  if (success) {
+                    chProd.price = variant.retailPrice;
+                    chProd.lastSyncedAt = new Date();
+                    await chProd.save();
+                    syncedCount++;
+                  }
+                } catch (ebayPriceErr: any) {
+                  logger.warn(`Failed to sync eBay price for SKU ${chProd.sku}: ${ebayPriceErr.message}`);
                 }
               }
             }
@@ -288,14 +362,13 @@ export class SyncController {
     }
   }
 
-  // POST /api/v1/sync/import-to-canonical - Import Shopify products directly into Canonical Master Catalog
+  // POST /api/v1/sync/import-to-canonical - Import products from external channels directly into Canonical Master Catalog
   static async importToCanonical(req: Request, res: Response) {
     try {
       const { channelConnectionId, forceReimport = false } = req.body;
 
       const connQuery: any = {
         organizationId: req.tenantId,
-        channelType: ChannelType.SHOPIFY,
         status: ChannelStatus.ACTIVE,
       };
       if (channelConnectionId) {
@@ -306,7 +379,7 @@ export class SyncController {
       if (connections.length === 0) {
         return res.status(400).json({
           success: false,
-          error: { message: 'No active Shopify store connection found' },
+          error: { message: 'No active channel connection found' },
         });
       }
 
@@ -317,40 +390,71 @@ export class SyncController {
       let mappedCount = 0;
 
       for (const conn of connections) {
-        // Fetch latest products from Shopify
-        try {
-          const { domain, token } = ShopifyService.getCredentials(conn);
-          const client = ShopifyService.getClient(domain, token);
-          const shopRes = await client.get('/products.json?limit=250');
-          const prods = shopRes.data?.products || [];
+        // Fetch latest products from channel
+        if (conn.channelType === ChannelType.SHOPIFY) {
+          try {
+            const { domain, token } = ShopifyService.getCredentials(conn);
+            const client = ShopifyService.getClient(domain, token);
+            const shopRes = await client.get('/products.json?limit=250');
+            const prods = shopRes.data?.products || [];
 
-          for (const prod of prods) {
-            for (const variant of prod.variants || []) {
+            for (const prod of prods) {
+              for (const variant of prod.variants || []) {
+                await ChannelProduct.findOneAndUpdate(
+                  {
+                    organizationId: req.tenantId,
+                    channelConnectionId: conn._id,
+                    externalProductId: String(prod.id),
+                    externalVariantId: String(variant.id),
+                  },
+                  {
+                    channelType: ChannelType.SHOPIFY,
+                    title: prod.title + (variant.title && variant.title !== 'Default Title' ? ` - ${variant.title}` : ''),
+                    sku: (variant.sku && variant.sku.trim()) || `SHOPIFY-${variant.id}`,
+                    barcode: variant.barcode || '',
+                    price: parseFloat(variant.price) || 0,
+                    inventoryQuantity: variant.inventory_quantity || 0,
+                    status: ChannelProductStatus.ACTIVE,
+                    syncStatus: SyncStatus.SYNCED,
+                    lastSyncedAt: new Date(),
+                    rawPayload: { product: prod, variant },
+                  },
+                  { upsert: true, new: true }
+                );
+              }
+            }
+          } catch (fetchErr: any) {
+            logger.warn(`Could not refresh Shopify channel catalog directly: ${fetchErr.message}`);
+          }
+        } else if (conn.channelType === ChannelType.EBAY) {
+          try {
+            const { host, token } = EbayService.getCredentials(conn);
+            const items = await EbayService.getInventoryItems(host, token, 100);
+            for (const item of items) {
               await ChannelProduct.findOneAndUpdate(
                 {
                   organizationId: req.tenantId,
                   channelConnectionId: conn._id,
-                  externalProductId: String(prod.id),
-                  externalVariantId: String(variant.id),
+                  externalProductId: item.sku,
                 },
                 {
-                  channelType: ChannelType.SHOPIFY,
-                  title: prod.title + (variant.title && variant.title !== 'Default Title' ? ` - ${variant.title}` : ''),
-                  sku: (variant.sku && variant.sku.trim()) || `SHOPIFY-${variant.id}`,
-                  barcode: variant.barcode || '',
-                  price: parseFloat(variant.price) || 0,
-                  inventoryQuantity: variant.inventory_quantity || 0,
+                  channelType: ChannelType.EBAY,
+                  title: item.title,
+                  sku: item.sku ? item.sku.toUpperCase().trim() : undefined,
+                  barcode: '',
+                  price: item.price || 0,
+                  inventoryQuantity: item.quantity || 0,
                   status: ChannelProductStatus.ACTIVE,
                   syncStatus: SyncStatus.SYNCED,
                   lastSyncedAt: new Date(),
-                  rawPayload: { product: prod, variant },
+                  rawPayload: { ebayItem: item.raw, images: item.images, description: item.description },
                 },
                 { upsert: true, new: true }
               );
             }
+          } catch (fetchErr: any) {
+            logger.warn(`Could not refresh eBay channel catalog directly: ${fetchErr.message}`);
           }
-        } catch (fetchErr: any) {
-          logger.warn(`Could not refresh Shopify channel catalog directly: ${fetchErr.message}`);
         }
 
         const channelProducts = await ChannelProduct.find({
@@ -373,25 +477,37 @@ export class SyncController {
           const rawProd = firstItem.rawPayload?.product;
 
           const baseTitle = rawProd?.title || firstItem.title.split(' - ')[0] || firstItem.title;
-          const masterSku = (firstItem.sku || `SH-${extId}`).toUpperCase().trim();
+          const prefix = conn.channelType === ChannelType.EBAY ? 'EBAY' : 'SH';
+          const masterSku = (firstItem.sku || `${prefix}-${extId}`).toUpperCase().trim();
 
           // Transform images to match CanonicalProduct embedded schema: [{ url, altText, position, isPrimary }]
-          const rawImages = rawProd?.images && Array.isArray(rawProd.images) && rawProd.images.length > 0
-            ? rawProd.images
-            : rawProd?.image
-            ? [rawProd.image]
-            : [];
-          const images = (Array.isArray(rawImages) ? rawImages : [rawImages])
-            .map((img: any, idx: number) => {
-              const url = typeof img === 'string' ? img : img?.src || img?.url || '';
-              return {
-                url,
-                altText: typeof img === 'object' ? img?.alt || '' : '',
-                position: typeof img === 'object' && typeof img?.position === 'number' ? img.position : idx,
-                isPrimary: idx === 0,
-              };
-            })
-            .filter((img: any) => img.url && typeof img.url === 'string' && img.url.trim().length > 0);
+          let images: any[] = [];
+          if (conn.channelType === ChannelType.EBAY) {
+            const rawImgUrls = firstItem.rawPayload?.images || [];
+            images = rawImgUrls.map((url: string, idx: number) => ({
+              url,
+              altText: baseTitle,
+              position: idx,
+              isPrimary: idx === 0,
+            })).filter((img: any) => img.url && typeof img.url === 'string' && img.url.trim().length > 0);
+          } else {
+            const rawImages = rawProd?.images && Array.isArray(rawProd.images) && rawProd.images.length > 0
+              ? rawProd.images
+              : rawProd?.image
+              ? [rawProd.image]
+              : [];
+            images = (Array.isArray(rawImages) ? rawImages : [rawImages])
+              .map((img: any, idx: number) => {
+                const url = typeof img === 'string' ? img : img?.src || img?.url || '';
+                return {
+                  url,
+                  altText: typeof img === 'object' ? img?.alt || '' : '',
+                  position: typeof img === 'object' && typeof img?.position === 'number' ? img.position : idx,
+                  isPrimary: idx === 0,
+                };
+              })
+              .filter((img: any) => img.url && typeof img.url === 'string' && img.url.trim().length > 0);
+          }
 
           const rawTags = rawProd?.tags || [];
           const tags = Array.isArray(rawTags)
@@ -399,6 +515,16 @@ export class SyncController {
             : typeof rawTags === 'string'
             ? rawTags.split(',').map((t: string) => t.trim()).filter(Boolean)
             : [];
+
+          const description = conn.channelType === ChannelType.EBAY
+            ? (firstItem.rawPayload?.description || '')
+            : (rawProd?.body_html || '');
+          const brand = conn.channelType === ChannelType.EBAY
+            ? 'eBay'
+            : (rawProd?.vendor || 'Shopify');
+          const category = conn.channelType === ChannelType.EBAY
+            ? 'General'
+            : (rawProd?.product_type || 'General');
 
           // Check if CanonicalProduct with masterSku or title already exists
           let canonicalProduct = await CanonicalProduct.findOne({
@@ -409,9 +535,9 @@ export class SyncController {
           if (canonicalProduct) {
             alreadyImportedProductsCount++;
             if (forceReimport) {
-              canonicalProduct.description = rawProd?.body_html || canonicalProduct.description;
-              canonicalProduct.brand = rawProd?.vendor || canonicalProduct.brand;
-              canonicalProduct.category = rawProd?.product_type || canonicalProduct.category;
+              canonicalProduct.description = description || canonicalProduct.description;
+              canonicalProduct.brand = brand || canonicalProduct.brand;
+              canonicalProduct.category = category || canonicalProduct.category;
               canonicalProduct.tags = tags.length > 0 ? tags : canonicalProduct.tags;
               if (images.length > 0) canonicalProduct.images = images;
               canonicalProduct.totalVariants = items.length;
@@ -423,9 +549,9 @@ export class SyncController {
               organizationId: req.tenantId,
               title: baseTitle,
               masterSku,
-              description: rawProd?.body_html || '',
-              brand: rawProd?.vendor || 'Shopify',
-              category: rawProd?.product_type || 'General',
+              description,
+              brand,
+              category,
               tags,
               images,
               defaultCostPrice: 0,
@@ -438,7 +564,7 @@ export class SyncController {
 
           // Process variants for this product
           for (const item of items) {
-            const variantSku = (item.sku || `SH-VAR-${item.externalVariantId}`).toUpperCase().trim();
+            const variantSku = (item.sku || `${prefix}-VAR-${item.externalVariantId || item.externalProductId}`).toUpperCase().trim();
 
             let variant = await ProductVariant.findOne({
               organizationId: req.tenantId,
@@ -503,7 +629,7 @@ export class SyncController {
                   quantityChanged: stock,
                   previousTrackedStock: 0,
                   newTrackedStock: stock,
-                  reason: 'Imported from Shopify catalog',
+                  reason: `Imported from ${conn.name} (${conn.channelType}) catalog`,
                   performedBy: req.user?.userId,
                 });
               }
@@ -522,7 +648,7 @@ export class SyncController {
                 canonicalVariantId: variant._id,
                 channelConnectionId: conn._id,
                 channelProductId: item._id,
-                channelType: ChannelType.SHOPIFY,
+                channelType: conn.channelType,
                 mappingConfidence: MappingConfidence.EXACT_SKU,
                 syncPrice: true,
                 syncInventory: true,
@@ -535,10 +661,11 @@ export class SyncController {
         }
       }
 
+      const channelLabel = connections.length === 1 ? `${connections[0].name} (${connections[0].channelType})` : 'your connected stores';
       const alreadyImported = newlyImportedProductsCount === 0 && alreadyImportedProductsCount > 0 && !forceReimport;
 
       logger.info(
-        `Import summary: ${newlyImportedProductsCount} new products, ${alreadyImportedProductsCount} already existing, ${newlyImportedVariantsCount} new variants, ${mappedCount} mappings.`
+        `Import summary for ${channelLabel}: ${newlyImportedProductsCount} new products, ${alreadyImportedProductsCount} already existing, ${newlyImportedVariantsCount} new variants, ${mappedCount} mappings.`
       );
 
       return res.json({
@@ -550,15 +677,17 @@ export class SyncController {
           updatedProductsCount,
           importedVariantsCount: newlyImportedVariantsCount,
           mappedCount,
+          channelName: connections.length === 1 ? connections[0].name : 'All Channels',
+          channelType: connections.length === 1 ? connections[0].channelType : undefined,
           message: alreadyImported
-            ? `Products from your Shopify store are already imported in your Master Catalog (${alreadyImportedProductsCount} products).`
+            ? `Products from ${channelLabel} are already imported in your Master Catalog (${alreadyImportedProductsCount} products).`
             : forceReimport
-            ? `Successfully refreshed and synchronized ${alreadyImportedProductsCount} products from Shopify!`
-            : `Successfully imported ${newlyImportedProductsCount} new products (${newlyImportedVariantsCount} variants) from Shopify into your Master Catalog!`,
+            ? `Successfully refreshed and synchronized ${alreadyImportedProductsCount} products from ${channelLabel}!`
+            : `Successfully imported ${newlyImportedProductsCount} new products (${newlyImportedVariantsCount} variants) from ${channelLabel} into your Master Catalog!`,
         },
       });
     } catch (error: any) {
-      logger.error('Failed to import Shopify products to master catalog:', error);
+      logger.error('Failed to import products to master catalog:', error);
       return res.status(500).json({
         success: false,
         error: { message: error.message || 'Failed to import products to canonical catalog' },

@@ -204,15 +204,20 @@ export default function ChannelsPage() {
 
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
+    setModalError(null);
+    let domain = storeDomain.trim();
+    if (selectedType === ChannelType.EBAY && (!domain || domain.length === 0)) {
+      domain = 'api.sandbox.ebay.com';
+    }
     connectMutation.mutate({
       channelType: selectedType,
-      name: storeName,
+      name: storeName.trim(),
       config: {
-        storeDomain,
-        baseUrl: storeDomain,
+        storeDomain: domain,
+        baseUrl: domain,
       },
       credentials: {
-        accessToken,
+        accessToken: accessToken.trim(),
       },
     });
   };
@@ -499,7 +504,13 @@ export default function ChannelsPage() {
                 <input
                   type="text"
                   required
-                  placeholder="e.g., US Main Store"
+                  placeholder={
+                    selectedType === ChannelType.EBAY
+                      ? 'e.g., eBay Sandbox Store'
+                      : selectedType === ChannelType.SHOPIFY
+                      ? 'e.g., US Main Store'
+                      : 'e.g., Custom API Store'
+                  }
                   value={storeName}
                   onChange={(e) => setStoreName(e.target.value)}
                   className="w-full px-3.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-white text-xs outline-none focus:border-brand-500"
@@ -507,33 +518,90 @@ export default function ChannelsPage() {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  Store Domain / Base URL
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-semibold text-slate-300">
+                    {selectedType === ChannelType.EBAY
+                      ? 'eBay Environment / API Host'
+                      : selectedType === ChannelType.SHOPIFY
+                      ? 'Shopify Store Domain'
+                      : 'Store Domain / Base URL'}
+                  </label>
+                  {selectedType === ChannelType.EBAY && (
+                    <div className="flex items-center gap-1.5 text-[10px]">
+                      <button
+                        type="button"
+                        onClick={() => setStoreDomain('api.sandbox.ebay.com')}
+                        className={`px-2 py-0.5 rounded transition ${
+                          storeDomain === 'api.sandbox.ebay.com' || !storeDomain
+                            ? 'bg-amber-600/30 text-amber-300 border border-amber-500/50'
+                            : 'bg-slate-800 text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        Sandbox
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setStoreDomain('api.ebay.com')}
+                        className={`px-2 py-0.5 rounded transition ${
+                          storeDomain === 'api.ebay.com'
+                            ? 'bg-blue-600/30 text-blue-300 border border-blue-500/50'
+                            : 'bg-slate-800 text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        Production
+                      </button>
+                    </div>
+                  )}
+                </div>
                 <input
                   type="text"
                   required
-                  placeholder="your-store.myshopify.com"
+                  placeholder={
+                    selectedType === ChannelType.EBAY
+                      ? 'api.sandbox.ebay.com'
+                      : selectedType === ChannelType.SHOPIFY
+                      ? 'your-store.myshopify.com'
+                      : 'https://api.yourdomain.com'
+                  }
                   value={storeDomain}
                   onChange={(e) => setStoreDomain(e.target.value)}
                   className="w-full px-3.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-white text-xs outline-none focus:border-brand-500 font-mono"
                 />
+                <p className="text-[10px] text-slate-500 mt-1">
+                  {selectedType === ChannelType.EBAY
+                    ? 'Default is api.sandbox.ebay.com for testing, or api.ebay.com for production.'
+                    : selectedType === ChannelType.SHOPIFY
+                    ? 'Your myshopify domain (e.g., your-store.myshopify.com).'
+                    : 'The base API URL for custom catalog sync.'}
+                </p>
               </div>
 
               <div>
                 <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  Admin API Access Token / API Key
+                  {selectedType === ChannelType.EBAY
+                    ? 'eBay User OAuth Access Token'
+                    : selectedType === ChannelType.SHOPIFY
+                    ? 'Shopify Admin API Access Token'
+                    : 'Admin API Access Token / API Key'}
                 </label>
                 <input
                   type="password"
                   required
-                  placeholder="shpat_xxxxxxxxxxxxxxxxxxxxx"
+                  placeholder={
+                    selectedType === ChannelType.EBAY
+                      ? 'v^1.1#i^1#p^3#r^1#f^0#I^3#t^Ul4xMF8... (OAuth Bearer Token)'
+                      : selectedType === ChannelType.SHOPIFY
+                      ? 'shpat_xxxxxxxxxxxxxxxxxxxxx'
+                      : 'API Key or Bearer Token'
+                  }
                   value={accessToken}
                   onChange={(e) => setAccessToken(e.target.value)}
                   className="w-full px-3.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-white text-xs outline-none focus:border-brand-500 font-mono"
                 />
                 <p className="text-[10px] text-slate-500 mt-1">
-                  Encrypted at rest using AES-256-GCM.
+                  {selectedType === ChannelType.EBAY
+                    ? 'Live-validated against eBay REST Inventory API before saving. Encrypted with AES-256-GCM.'
+                    : 'Live-validated against Shopify Admin API before saving. Encrypted with AES-256-GCM.'}
                 </p>
               </div>
 
