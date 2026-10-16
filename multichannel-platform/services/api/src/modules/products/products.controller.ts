@@ -8,10 +8,21 @@ import {
   ProductCostHistory,
   ProductMapping,
   ChannelProduct,
+  ChannelConnection,
 } from '../../database/models';
-import { ProductStatus, InventoryChangeType, MappingConfidence } from '@multichannel/shared';
+import {
+  ProductStatus,
+  InventoryChangeType,
+  MappingConfidence,
+  ChannelType,
+  ChannelStatus,
+  ChannelProductStatus,
+  SyncStatus,
+  MappingStatus,
+} from '@multichannel/shared';
 import { runInTransaction } from '../../database';
 import { logger } from '../../utils/logger';
+import { ShopifyService } from '../../services/shopify.service';
 
 export class ProductsController {
   // GET /api/v1/products - List canonical products with pagination, search, and variant count
@@ -432,4 +443,196 @@ export class ProductsController {
       });
     }
   }
+
+  // POST /api/v1/products/:id/publish - Push/publish a canonical product to connected channels (Shopify, etc.)
+  static async publish(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      const { channelConnectionId } = req.body;
+
+      const product = await CanonicalProduct.findOne({
+        _id: id,
+        organizationId: req.tenantId,
+      });
+
+      if (!product) {
+        return res.status(404).json({
+          success: false,
+          error: { message: 'Product not found', code: 'NOT_FOUND' },
+        });
+      }
+
+      const variants = await ProductVariant.find({
+        canonicalProductId: product._id,
+        organizationId: req.tenantId,
+      });
+
+      if (variants.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: { message: 'Product has no variants to publish' },
+        });
+      }
+
+      const variantIds = variants.map((v) => v._id);
+      const inventoryItems = await InventoryItem.find({
+        canonicalVariantId: { $in: variantIds },
+        organizationId: req.tenantId,
+      });
+
+      // Find channel connections
+      const connQuery: any = {
+        organizationId: req.tenantId,
+        status: ChannelStatus.ACTIVE,
+      };
+      if (channelConnectionId) {
+        connQuery._id = channelConnectionId;
+      }
+      const connections = await ChannelConnection.find(connQuery);
+
+      if (connections.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: { message: 'No active sales channels found to publish to' },
+        });
+      }
+
+      const results: any[] = [];
+
+      for (const conn of connections) {
+        if (conn.channelType === ChannelType.SHOPIFY) {
+          try {
+            const { domain, token } = ShopifyService.getCredentials(conn);
+
+            // Format variants with current stock
+            const variantPayload = variants.map((v) => {
+              const inv = inventoryItems.find(
+                (i) => i.canonicalVariantId.toString() === v._id.toString()
+              );
+              return {
+                title: v.title,
+                sku: v.sku,
+                barcode: v.barcode,
+                retailPrice: v.retailPrice,
+                compareAtPrice: v.compareAtPrice,
+                weight: v.weight,
+                stockQuantity: inv?.trackedStock || 0,
+              };
+            });
+
+            const shopifyProduct = await ShopifyService.publishProduct(domain, token, {
+              title: product.title,
+              description: product.description,
+              brand: product.brand,
+              category: product.category,
+              tags: product.tags,
+              images: (product.images || []).map((img: any) => (typeof img === 'string' ? img : img.url)),
+              variants: variantPayload,
+            });
+
+            // For each created variant on Shopify, create ChannelProduct and ProductMapping
+            const createdMappings: any[] = [];
+            for (let i = 0; i < variants.length; i++) {
+              const platformVariant = variants[i];
+              const shVariant = shopifyProduct.variants?.[i] || shopifyProduct.variants?.[0];
+
+              if (shVariant) {
+                const channelProd = await ChannelProduct.findOneAndUpdate(
+                  {
+                    organizationId: req.tenantId,
+                    channelConnectionId: conn._id,
+                    externalProductId: String(shopifyProduct.id),
+                    externalVariantId: String(shVariant.id),
+                  },
+                  {
+                    channelType: ChannelType.SHOPIFY,
+                    title: `${shopifyProduct.title} - ${shVariant.title}`,
+                    sku: shVariant.sku || platformVariant.sku,
+                    barcode: shVariant.barcode || platformVariant.barcode || '',
+                    price: parseFloat(shVariant.price) || platformVariant.retailPrice,
+                    inventoryQuantity: shVariant.inventory_quantity || 0,
+                    status: ChannelProductStatus.ACTIVE,
+                    syncStatus: SyncStatus.SYNCED,
+                    lastSyncedAt: new Date(),
+                    rawPayload: { product: shopifyProduct, variant: shVariant },
+                  },
+                  { upsert: true, new: true }
+                );
+
+                const mapping = await ProductMapping.findOneAndUpdate(
+                  {
+                    organizationId: req.tenantId,
+                    channelProductId: channelProd._id,
+                  },
+                  {
+                    canonicalProductId: product._id,
+                    canonicalVariantId: platformVariant._id,
+                    channelConnectionId: conn._id,
+                    channelProductId: channelProd._id,
+                    channelType: ChannelType.SHOPIFY,
+                    mappingConfidence: MappingConfidence.EXACT_SKU,
+                    syncPrice: true,
+                    syncInventory: true,
+                    status: MappingStatus.MAPPED,
+                  },
+                  { upsert: true, new: true }
+                );
+
+                createdMappings.push(mapping);
+              }
+            }
+
+            conn.lastSyncAt = new Date();
+            await conn.save();
+
+            results.push({
+              channelId: conn._id,
+              channelName: conn.name,
+              channelType: conn.channelType,
+              status: 'SUCCESS',
+              externalProductId: shopifyProduct.id,
+              mappingsCount: createdMappings.length,
+            });
+          } catch (pubErr: any) {
+            logger.error(`Failed to publish product ${product.masterSku} to ${conn.name}:`, pubErr);
+            results.push({
+              channelId: conn._id,
+              channelName: conn.name,
+              channelType: conn.channelType,
+              status: 'FAILED',
+              error: pubErr.response?.data?.errors || pubErr.message,
+            });
+          }
+        }
+      }
+
+      const allFailed = results.length > 0 && results.every((r) => r.status === 'FAILED');
+      if (allFailed) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            message: results.map((r) => `${r.channelName}: ${r.error}`).join('; '),
+            code: 'PUBLISH_FAILED',
+          },
+          data: { results },
+        });
+      }
+
+      return res.json({
+        success: true,
+        data: {
+          productId: product._id,
+          title: product.title,
+          results,
+        },
+      });
+    } catch (error: any) {
+      logger.error('Failed to publish product:', error);
+      return res.status(500).json({
+        success: false,
+        error: { message: error.message || 'Failed to publish product' },
+      });
+    }
+  }
 }
+

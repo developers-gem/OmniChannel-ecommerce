@@ -14,6 +14,11 @@ import {
   ExternalLink,
   Layers,
   Boxes,
+  UploadCloud,
+  RefreshCw,
+  CheckCircle2,
+  AlertCircle,
+  Share2,
 } from 'lucide-react';
 
 export default function ProductsPage() {
@@ -21,6 +26,11 @@ export default function ProductsPage() {
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const [statusFilter, setStatusFilter] = useState('');
+  const [publishingId, setPublishingId] = useState<string | null>(null);
+  const [isImporting, setIsImporting] = useState(false);
+  const [notification, setNotification] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [showAlreadyImportedModal, setShowAlreadyImportedModal] = useState(false);
+  const [alreadyImportedCount, setAlreadyImportedCount] = useState(0);
 
   const { data: productResponse, isLoading } = useQuery({
     queryKey: ['canonical-products', search, page, statusFilter],
@@ -43,6 +53,76 @@ export default function ProductsPage() {
     },
   });
 
+  // Push / Publish product to connected channels (Shopify)
+  const publishMutation = useMutation({
+    mutationFn: async (id: string) => {
+      setPublishingId(id);
+      setNotification(null);
+      const res: any = await api.post(`/products/${id}/publish`, {});
+      return res.data;
+    },
+    onSuccess: (data: any) => {
+      setPublishingId(null);
+      const successResults = data.results?.filter((r: any) => r.status === 'SUCCESS') || [];
+      if (successResults.length > 0) {
+        setNotification({
+          type: 'success',
+          text: `Successfully pushed "${data.title}" to ${successResults.map((r: any) => r.channelName).join(', ')} and mapped listings!`,
+        });
+      }
+      queryClient.invalidateQueries({ queryKey: ['canonical-products'] });
+      queryClient.invalidateQueries({ queryKey: ['product-mappings'] });
+      setTimeout(() => setNotification(null), 6000);
+    },
+    onError: (err: any) => {
+      setPublishingId(null);
+      setNotification({
+        type: 'error',
+        text: err.message || 'Failed to publish product to Shopify',
+      });
+      setTimeout(() => setNotification(null), 8000);
+    },
+  });
+
+  // Import all products from Shopify into Master Catalog
+  const importToCanonicalMutation = useMutation({
+    mutationFn: async (vars?: { forceReimport?: boolean }) => {
+      setIsImporting(true);
+      setNotification(null);
+      const res: any = await api.post('/sync/import-to-canonical', {
+        forceReimport: vars?.forceReimport ?? false,
+      });
+      return res.data || res;
+    },
+    onSuccess: (data: any) => {
+      setIsImporting(false);
+      const info = data?.data || data;
+
+      if (info?.alreadyImported) {
+        setAlreadyImportedCount(info.alreadyImportedCount || 0);
+        setShowAlreadyImportedModal(true);
+        return;
+      }
+
+      setNotification({
+        type: 'success',
+        text: info?.message || `Successfully imported products from Shopify into your master catalog!`,
+      });
+      queryClient.invalidateQueries({ queryKey: ['canonical-products'] });
+      queryClient.invalidateQueries({ queryKey: ['product-mappings'] });
+      queryClient.invalidateQueries({ queryKey: ['channel-connections'] });
+      setTimeout(() => setNotification(null), 8000);
+    },
+    onError: (err: any) => {
+      setIsImporting(false);
+      setNotification({
+        type: 'error',
+        text: err.message || 'Failed to import products from Shopify',
+      });
+      setTimeout(() => setNotification(null), 8000);
+    },
+  });
+
   const products = productResponse?.data || [];
   const pagination = productResponse?.pagination;
 
@@ -57,11 +137,21 @@ export default function ProductsPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-white">Canonical Catalog</h1>
           <p className="text-xs text-slate-400 mt-1">
-            Internal master catalog separate from channel listings
+            Internal master catalog synchronized across Shopify and external storefronts
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            onClick={() => importToCanonicalMutation.mutate({ forceReimport: false })}
+            disabled={isImporting}
+            className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-3.5 py-2.5 rounded-xl shadow-lg shadow-emerald-600/20 transition disabled:opacity-50 cursor-pointer"
+            title="Import all products from your connected Shopify store into the master catalog"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isImporting ? 'animate-spin' : ''}`} />
+            <span>{isImporting ? 'Importing from Shopify...' : 'Import from Shopify'}</span>
+          </button>
+
           <button
             onClick={handleExportCsv}
             className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold px-3.5 py-2.5 rounded-xl border border-slate-700 transition"
@@ -69,6 +159,7 @@ export default function ProductsPage() {
             <Download className="w-3.5 h-3.5" />
             <span>Export CSV</span>
           </button>
+
           <Link
             href="/products/new"
             className="flex items-center gap-2 bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold px-4 py-2.5 rounded-xl shadow-lg shadow-brand-600/30 transition"
@@ -78,6 +169,24 @@ export default function ProductsPage() {
           </Link>
         </div>
       </div>
+
+      {/* Notification Banner */}
+      {notification && (
+        <div
+          className={`p-4 rounded-xl flex items-center gap-3 text-xs border shadow-lg ${
+            notification.type === 'success'
+              ? 'bg-emerald-950/70 border-emerald-800/80 text-emerald-200'
+              : 'bg-red-950/70 border-red-800/80 text-red-200'
+          }`}
+        >
+          {notification.type === 'success' ? (
+            <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+          ) : (
+            <AlertCircle className="w-5 h-5 text-red-400 shrink-0" />
+          )}
+          <span className="font-medium">{notification.text}</span>
+        </div>
+      )}
 
       {/* Filter & Search Bar */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col sm:flex-row gap-3 items-center justify-between shadow-lg">
@@ -177,13 +286,25 @@ export default function ProductsPage() {
                       </span>
                     </td>
                     <td className="py-3.5 px-4 text-right">
-                      <button
-                        onClick={() => deleteMutation.mutate(p._id)}
-                        title="Archive and Unmap"
-                        className="p-1.5 text-slate-400 hover:text-red-400 hover:bg-slate-800 rounded-lg transition"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      <div className="flex items-center justify-end gap-1.5">
+                        <button
+                          onClick={() => publishMutation.mutate(p._id)}
+                          disabled={publishingId === p._id}
+                          title="Push & Publish to Shopify"
+                          className="flex items-center gap-1.5 px-2.5 py-1.5 bg-brand-600/20 hover:bg-brand-600 text-brand-300 hover:text-white rounded-lg border border-brand-500/30 transition disabled:opacity-50 text-[11px] font-semibold"
+                        >
+                          <UploadCloud className={`w-3.5 h-3.5 ${publishingId === p._id ? 'animate-bounce' : ''}`} />
+                          <span>{publishingId === p._id ? 'Pushing...' : 'Push to Shopify'}</span>
+                        </button>
+
+                        <button
+                          onClick={() => deleteMutation.mutate(p._id)}
+                          title="Archive and Unmap"
+                          className="p-1.5 text-slate-400 hover:text-red-400 hover:bg-slate-800 rounded-lg transition"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -191,39 +312,61 @@ export default function ProductsPage() {
                 <tr>
                   <td colSpan={8} className="py-12 text-center text-slate-500">
                     <Package className="w-8 h-8 mx-auto text-slate-700 mb-2" />
-                    <span>No canonical products found. Create one or import from CSV.</span>
+                    <span>No canonical products found. Click "Import from Shopify" above or create one!</span>
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
+      </div>
 
-        {/* Pagination */}
-        {pagination && pagination.totalPages > 1 && (
-          <div className="p-4 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
-            <span>
-              Page {pagination.page} of {pagination.totalPages} ({pagination.total} total products)
-            </span>
-            <div className="flex items-center gap-2">
+      {/* Confirmation Modal when products are already imported */}
+      {showAlreadyImportedModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+          <div className="bg-slate-900 border border-slate-700/80 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                <AlertCircle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-semibold text-white">Products already imported</h3>
+                <p className="text-xs text-slate-300 mt-1 leading-relaxed">
+                  Products from your Shopify store are already imported in your Master Catalog{alreadyImportedCount > 0 ? ` (${alreadyImportedCount} products)` : ''}.
+                </p>
+                <p className="text-xs text-amber-300/90 font-medium mt-2">
+                  Do you want to import again?
+                </p>
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Re-importing will refresh and update all titles, descriptions, images, prices, and stock levels from Shopify.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
               <button
-                disabled={page <= 1}
-                onClick={() => setPage(page - 1)}
-                className="px-3 py-1.5 bg-slate-800 rounded-lg disabled:opacity-40 hover:bg-slate-700 transition"
+                type="button"
+                onClick={() => setShowAlreadyImportedModal(false)}
+                className="px-4 py-2 rounded-xl text-xs font-medium text-slate-300 hover:bg-slate-800 border border-slate-700 transition cursor-pointer"
               >
-                Previous
+                Cancel
               </button>
               <button
-                disabled={page >= pagination.totalPages}
-                onClick={() => setPage(page + 1)}
-                className="px-3 py-1.5 bg-slate-800 rounded-lg disabled:opacity-40 hover:bg-slate-700 transition"
+                type="button"
+                onClick={() => {
+                  setShowAlreadyImportedModal(false);
+                  importToCanonicalMutation.mutate({ forceReimport: true });
+                }}
+                disabled={isImporting}
+                className="px-4 py-2 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/30 transition flex items-center gap-2 cursor-pointer"
               >
-                Next
+                {isImporting ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : null}
+                <span>Yes, Import Again</span>
               </button>
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -15,6 +15,10 @@ import {
   ExternalLink,
   ShieldCheck,
   Activity,
+  ArrowDownToLine,
+  Layers,
+  DollarSign,
+  Boxes,
 } from 'lucide-react';
 import { ChannelType, ChannelStatus } from '@multichannel/shared';
 
@@ -27,6 +31,8 @@ export default function ChannelsPage() {
   const [accessToken, setAccessToken] = useState('');
   const [testResults, setTestResults] = useState<Record<string, any>>({});
   const [modalError, setModalError] = useState<string | null>(null);
+  const [activeActionId, setActiveActionId] = useState<string | null>(null);
+  const [bannerMessage, setBannerMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const { data: channels, isLoading } = useQuery({
     queryKey: ['channel-connections'],
@@ -61,6 +67,123 @@ export default function ChannelsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['channel-connections'] });
+      queryClient.invalidateQueries({ queryKey: ['product-mappings'] });
+    },
+  });
+
+  // Pull external catalog into ChannelProduct
+  const syncMutation = useMutation({
+    mutationFn: async (channelId: string) => {
+      setActiveActionId(`sync-${channelId}`);
+      setBannerMessage(null);
+      const res: any = await api.post('/sync/trigger', {
+        channelConnectionId: channelId,
+        jobType: 'CATALOG_IMPORT',
+      });
+      return res.data;
+    },
+    onSuccess: () => {
+      setTimeout(() => {
+        queryClient.invalidateQueries({ queryKey: ['channel-connections'] });
+        queryClient.invalidateQueries({ queryKey: ['product-mappings'] });
+        queryClient.invalidateQueries({ queryKey: ['mapping-suggestions'] });
+        setActiveActionId(null);
+        setBannerMessage({
+          type: 'success',
+          text: 'External catalog refreshed! You can now import products to Master Catalog or link them.',
+        });
+      }, 1500);
+    },
+    onError: (err: any) => {
+      setActiveActionId(null);
+      setBannerMessage({ type: 'error', text: err.message || 'Failed to sync external catalog' });
+    },
+  });
+
+  // Import all products from Shopify into Canonical / Master Catalog
+  const importToCanonicalMutation = useMutation({
+    mutationFn: async (channelId: string) => {
+      setActiveActionId(`import-${channelId}`);
+      setBannerMessage(null);
+      const res: any = await api.post('/sync/import-to-canonical', {
+        channelConnectionId: channelId,
+      });
+      return res.data;
+    },
+    onSuccess: (data: any) => {
+      setActiveActionId(null);
+      const info = data?.data || data;
+      setBannerMessage({
+        type: 'success',
+        text: info?.message || 'Successfully imported all Shopify products into Master Catalog with variants and stock!',
+      });
+      queryClient.invalidateQueries({ queryKey: ['channel-connections'] });
+      queryClient.invalidateQueries({ queryKey: ['canonical-products'] });
+      queryClient.invalidateQueries({ queryKey: ['product-mappings'] });
+      queryClient.invalidateQueries({ queryKey: ['mapping-suggestions'] });
+      setTimeout(() => setBannerMessage(null), 8000);
+    },
+    onError: (err: any) => {
+      setActiveActionId(null);
+      setBannerMessage({
+        type: 'error',
+        text: err.message || 'Failed to import products to master catalog',
+      });
+      setTimeout(() => setBannerMessage(null), 8000);
+    },
+  });
+
+  // Push current inventory to Shopify
+  const syncInventoryMutation = useMutation({
+    mutationFn: async (channelId: string) => {
+      setActiveActionId(`stock-${channelId}`);
+      setBannerMessage(null);
+      const res: any = await api.post('/sync/trigger', {
+        channelConnectionId: channelId,
+        jobType: 'INVENTORY_SYNC',
+      });
+      return res.data;
+    },
+    onSuccess: () => {
+      setActiveActionId(null);
+      setBannerMessage({
+        type: 'success',
+        text: 'Inventory sync job queued! Platform stock levels are updating on Shopify.',
+      });
+      queryClient.invalidateQueries({ queryKey: ['channel-connections'] });
+      setTimeout(() => setBannerMessage(null), 6000);
+    },
+    onError: (err: any) => {
+      setActiveActionId(null);
+      setBannerMessage({ type: 'error', text: err.message || 'Failed to sync inventory' });
+      setTimeout(() => setBannerMessage(null), 6000);
+    },
+  });
+
+  // Push current prices to Shopify
+  const syncPriceMutation = useMutation({
+    mutationFn: async (channelId: string) => {
+      setActiveActionId(`price-${channelId}`);
+      setBannerMessage(null);
+      const res: any = await api.post('/sync/trigger', {
+        channelConnectionId: channelId,
+        jobType: 'PRICE_SYNC',
+      });
+      return res.data;
+    },
+    onSuccess: () => {
+      setActiveActionId(null);
+      setBannerMessage({
+        type: 'success',
+        text: 'Price sync job queued! Master prices are being pushed to Shopify.',
+      });
+      queryClient.invalidateQueries({ queryKey: ['channel-connections'] });
+      setTimeout(() => setBannerMessage(null), 6000);
+    },
+    onError: (err: any) => {
+      setActiveActionId(null);
+      setBannerMessage({ type: 'error', text: err.message || 'Failed to sync prices' });
+      setTimeout(() => setBannerMessage(null), 6000);
     },
   });
 
@@ -114,18 +237,42 @@ export default function ChannelsPage() {
         </button>
       </div>
 
+      {/* Banner Feedback */}
+      {bannerMessage && (
+        <div
+          className={`p-4 rounded-xl flex items-center gap-3 text-xs border shadow-lg ${
+            bannerMessage.type === 'success'
+              ? 'bg-emerald-950/70 border-emerald-800/80 text-emerald-200'
+              : 'bg-red-950/70 border-red-800/80 text-red-200'
+          }`}
+        >
+          {bannerMessage.type === 'success' ? (
+            <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+          ) : (
+            <AlertCircle className="w-5 h-5 text-red-400 shrink-0" />
+          )}
+          <span className="font-medium">{bannerMessage.text}</span>
+        </div>
+      )}
+
       {/* Connected Channel Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {isLoading ? (
           <div className="col-span-3 text-center py-12 text-xs text-slate-500">
             Loading connected channels...
           </div>
         ) : channels && channels.length > 0 ? (
           channels.map((channel: any) => {
-            const result = testResults[channel._id];
+            const channelId = typeof channel._id === 'object' ? channel._id?._id || channel._id?.id : channel._id;
+            const result = testResults[channelId];
+            const isImportRunning = activeActionId === `import-${channelId}`;
+            const isCatalogSyncRunning = activeActionId === `sync-${channelId}`;
+            const isStockSyncRunning = activeActionId === `stock-${channelId}`;
+            const isPriceSyncRunning = activeActionId === `price-${channelId}`;
+
             return (
               <div
-                key={channel._id}
+                key={channelId}
                 className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl relative flex flex-col justify-between"
               >
                 <div>
@@ -193,28 +340,73 @@ export default function ChannelsPage() {
                   )}
                 </div>
 
-                {/* Actions */}
-                <div className="mt-6 pt-4 border-t border-slate-800 flex items-center justify-between gap-2">
+                {/* Main 1-Click Import Action */}
+                <div className="mt-5 space-y-2">
                   <button
-                    onClick={() => {
-                      const channelId = typeof channel._id === 'object' ? channel._id?._id || channel._id?.id : channel._id;
-                      handleTestConnection(channelId);
-                    }}
-                    className="flex-1 flex items-center justify-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold py-2 rounded-xl transition"
+                    onClick={() => importToCanonicalMutation.mutate(channelId)}
+                    disabled={isImportRunning}
+                    className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold py-2.5 rounded-xl shadow-lg shadow-emerald-600/30 transition disabled:opacity-50"
+                    title="Convert all Shopify products into platform master products with stock & 1:1 mappings"
                   >
-                    <Activity className="w-3.5 h-3.5" />
+                    <ArrowDownToLine className={`w-4 h-4 ${isImportRunning ? 'animate-bounce' : ''}`} />
+                    <span>
+                      {isImportRunning
+                        ? 'Importing All Products to Catalog...'
+                        : 'Import All to Master Catalog'}
+                    </span>
+                  </button>
+
+                  {/* Secondary Sync Actions */}
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      onClick={() => syncMutation.mutate(channelId)}
+                      disabled={isCatalogSyncRunning}
+                      className="flex items-center justify-center gap-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-semibold py-2 rounded-xl border border-slate-700/60 transition disabled:opacity-50"
+                      title="Fetch latest listings from Shopify"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${isCatalogSyncRunning ? 'animate-spin' : ''}`} />
+                      <span>{isCatalogSyncRunning ? 'Syncing...' : 'Sync Catalog'}</span>
+                    </button>
+
+                    <button
+                      onClick={() => syncInventoryMutation.mutate(channelId)}
+                      disabled={isStockSyncRunning}
+                      className="flex items-center justify-center gap-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-semibold py-2 rounded-xl border border-slate-700/60 transition disabled:opacity-50"
+                      title="Push platform available stock to Shopify"
+                    >
+                      <Boxes className="w-3 h-3 text-emerald-400" />
+                      <span>{isStockSyncRunning ? 'Pushing...' : 'Sync Stock'}</span>
+                    </button>
+
+                    <button
+                      onClick={() => syncPriceMutation.mutate(channelId)}
+                      disabled={isPriceSyncRunning}
+                      className="flex items-center justify-center gap-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-semibold py-2 rounded-xl border border-slate-700/60 transition disabled:opacity-50"
+                      title="Push platform retail prices to Shopify"
+                    >
+                      <DollarSign className="w-3 h-3 text-yellow-400" />
+                      <span>{isPriceSyncRunning ? 'Pushing...' : 'Sync Price'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Footer Utilities */}
+                <div className="mt-4 pt-3 border-t border-slate-800 flex items-center justify-between text-xs">
+                  <button
+                    onClick={() => handleTestConnection(channelId)}
+                    className="flex items-center gap-1 text-slate-400 hover:text-white transition text-[11px]"
+                  >
+                    <Activity className="w-3.5 h-3.5 text-blue-400" />
                     <span>Test Connection</span>
                   </button>
 
                   <button
-                    onClick={() => {
-                      const channelId = typeof channel._id === 'object' ? channel._id?._id || channel._id?.id : channel._id;
-                      disconnectMutation.mutate(channelId);
-                    }}
+                    onClick={() => disconnectMutation.mutate(channelId)}
                     title="Disconnect Store"
-                    className="p-2 text-slate-400 hover:text-red-400 hover:bg-slate-800 rounded-xl transition"
+                    className="flex items-center gap-1 text-slate-500 hover:text-red-400 transition text-[11px]"
                   >
-                    <Trash2 className="w-4 h-4" />
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Disconnect</span>
                   </button>
                 </div>
               </div>
@@ -222,136 +414,143 @@ export default function ChannelsPage() {
           })
         ) : (
           <div className="col-span-3 bg-slate-900 border border-slate-800 border-dashed rounded-2xl p-12 text-center">
-            <Share2 className="w-10 h-10 text-slate-600 mx-auto mb-3" />
-            <h3 className="text-base font-bold text-white">No sales channels connected</h3>
-            <p className="text-xs text-slate-400 max-w-md mx-auto mt-1 mb-6">
-              Connect your first Shopify, eBay, or custom ecommerce storefront to start synchronizing
-              products, orders, and shared inventory.
+            <ShoppingBag className="w-10 h-10 text-slate-600 mx-auto mb-3" />
+            <h3 className="text-base font-bold text-white">No active storefronts connected</h3>
+            <p className="text-xs text-slate-400 max-w-sm mx-auto mt-1 mb-6">
+              Connect your Shopify store using an Admin API Access Token to start synchronizing products.
             </p>
             <button
               onClick={() => setIsModalOpen(true)}
-              className="inline-flex items-center gap-2 bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold px-4 py-2.5 rounded-xl shadow-lg shadow-brand-600/30 transition"
+              className="bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold px-4 py-2.5 rounded-xl transition"
             >
-              <Plus className="w-4 h-4" />
-              <span>Connect First Store</span>
+              Connect First Channel
             </button>
           </div>
         )}
       </div>
 
-      {/* Connect Modal */}
+      {/* Connect Store Modal */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl relative">
-            <h2 className="text-lg font-bold text-white">Connect Sales Channel</h2>
-            <p className="text-xs text-slate-400 mt-1 mb-4">
-              Securely register credentials with AES-256 encryption
+            <h2 className="text-lg font-bold text-white mb-1">Connect Sales Channel</h2>
+            <p className="text-xs text-slate-400 mb-6">
+              Establish a secure, encrypted handshake with your external ecommerce platform.
             </p>
 
             {modalError && (
-              <div className="mb-4 p-3.5 rounded-xl bg-red-950/60 border border-red-800/80 flex items-start gap-2.5 text-red-200 text-xs">
-                <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+              <div className="p-3 bg-red-950/60 border border-red-800 rounded-xl text-red-300 text-xs flex items-center gap-2 mb-4">
+                <AlertCircle className="w-4 h-4 shrink-0" />
                 <span>{modalError}</span>
               </div>
             )}
 
             <form onSubmit={handleCreate} className="space-y-4">
-              {/* Channel Type Selector */}
               <div>
-                <label className="block text-xs font-semibold uppercase text-slate-300 mb-2">
-                  Channel Type
+                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                  Channel Provider
                 </label>
                 <div className="grid grid-cols-3 gap-2">
-                  {[
-                    { type: ChannelType.SHOPIFY, label: 'Shopify', icon: '🛍️' },
-                    { type: ChannelType.EBAY, label: 'eBay', icon: '🏷️' },
-                    { type: ChannelType.CUSTOM_STORE, label: 'Custom REST', icon: '🌐' },
-                  ].map((item) => (
-                    <button
-                      type="button"
-                      key={item.type}
-                      onClick={() => setSelectedType(item.type)}
-                      className={`p-3 rounded-xl border text-center transition flex flex-col items-center gap-1 text-xs font-semibold ${
-                        selectedType === item.type
-                          ? 'bg-brand-600/20 border-brand-500 text-white'
-                          : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
-                      }`}
-                    >
-                      <span className="text-lg">{item.icon}</span>
-                      <span>{item.label}</span>
-                    </button>
-                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setSelectedType(ChannelType.SHOPIFY)}
+                    className={`p-3 rounded-xl border text-xs font-bold flex flex-col items-center gap-1.5 transition ${
+                      selectedType === ChannelType.SHOPIFY
+                        ? 'bg-brand-600/20 border-brand-500 text-brand-300'
+                        : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700'
+                    }`}
+                  >
+                    <span className="text-lg">🛍️</span>
+                    <span>Shopify</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setSelectedType(ChannelType.EBAY)}
+                    className={`p-3 rounded-xl border text-xs font-bold flex flex-col items-center gap-1.5 transition ${
+                      selectedType === ChannelType.EBAY
+                        ? 'bg-brand-600/20 border-brand-500 text-brand-300'
+                        : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700'
+                    }`}
+                  >
+                    <span className="text-lg">🏷️</span>
+                    <span>eBay</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setSelectedType(ChannelType.CUSTOM_STORE)}
+                    className={`p-3 rounded-xl border text-xs font-bold flex flex-col items-center gap-1.5 transition ${
+                      selectedType === ChannelType.CUSTOM_STORE
+                        ? 'bg-brand-600/20 border-brand-500 text-brand-300'
+                        : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700'
+                    }`}
+                  >
+                    <span className="text-lg">🌐</span>
+                    <span>Custom REST</span>
+                  </button>
                 </div>
               </div>
 
               <div>
-                <label className="block text-xs font-semibold uppercase text-slate-300">
+                <label className="block text-xs font-semibold text-slate-300 mb-1">
                   Store Nickname
                 </label>
                 <input
                   type="text"
                   required
+                  placeholder="e.g., US Main Store"
                   value={storeName}
                   onChange={(e) => setStoreName(e.target.value)}
-                  placeholder="e.g., US Main Shopify Store"
-                  className="mt-1 w-full px-4 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-white text-xs focus:ring-2 focus:ring-brand-500 outline-none"
+                  className="w-full px-3.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-white text-xs outline-none focus:border-brand-500"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold uppercase text-slate-300">
-                  {selectedType === ChannelType.SHOPIFY
-                    ? 'Store Domain (e.g., mystore.myshopify.com)'
-                    : selectedType === ChannelType.CUSTOM_STORE
-                    ? 'API Base URL (e.g., https://mystore.com/api)'
-                    : 'eBay Account / Environment (SANDBOX or PRODUCTION)'}
+                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                  Store Domain / Base URL
                 </label>
                 <input
                   type="text"
                   required
+                  placeholder="your-store.myshopify.com"
                   value={storeDomain}
                   onChange={(e) => setStoreDomain(e.target.value)}
-                  placeholder={
-                    selectedType === ChannelType.SHOPIFY
-                      ? 'merchant-store.myshopify.com'
-                      : selectedType === ChannelType.CUSTOM_STORE
-                      ? 'https://mystore.com/api'
-                      : 'SANDBOX'
-                  }
-                  className="mt-1 w-full px-4 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-white text-xs focus:ring-2 focus:ring-brand-500 outline-none font-mono"
+                  className="w-full px-3.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-white text-xs outline-none focus:border-brand-500 font-mono"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold uppercase text-slate-300">
-                  {selectedType === ChannelType.CUSTOM_STORE
-                    ? 'API Key / Bearer Token (Encrypted at rest)'
-                    : 'Access Token / App Key'}
+                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                  Admin API Access Token / API Key
                 </label>
                 <input
                   type="password"
                   required
+                  placeholder="shpat_xxxxxxxxxxxxxxxxxxxxx"
                   value={accessToken}
                   onChange={(e) => setAccessToken(e.target.value)}
-                  placeholder="••••••••••••••••••••••••"
-                  className="mt-1 w-full px-4 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-white text-xs focus:ring-2 focus:ring-brand-500 outline-none font-mono"
+                  className="w-full px-3.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-white text-xs outline-none focus:border-brand-500 font-mono"
                 />
+                <p className="text-[10px] text-slate-500 mt-1">
+                  Encrypted at rest using AES-256-GCM.
+                </p>
               </div>
 
               <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-800">
                 <button
                   type="button"
                   onClick={() => setIsModalOpen(false)}
-                  className="px-4 py-2.5 text-xs text-slate-400 hover:text-white transition"
+                  className="px-4 py-2 rounded-xl text-xs text-slate-400 hover:text-white transition"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={connectMutation.isPending}
-                  className="bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold px-4 py-2.5 rounded-xl transition shadow-lg shadow-brand-600/30"
+                  className="bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold px-4 py-2 rounded-xl shadow-lg shadow-brand-600/30 transition disabled:opacity-50"
                 >
-                  {connectMutation.isPending ? 'Connecting...' : 'Authorize & Connect'}
+                  {connectMutation.isPending ? 'Verifying Credentials...' : 'Save & Authorize'}
                 </button>
               </div>
             </form>

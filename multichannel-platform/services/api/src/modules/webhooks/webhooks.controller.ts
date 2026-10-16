@@ -1,7 +1,21 @@
 import { Request, Response } from 'express';
 import crypto from 'crypto';
-import { ChannelConnection, WebhookEvent, Order, OrderLine, InventoryItem, ChannelProduct, ProductMapping } from '../../database/models';
-import { ChannelType, OrderFinancialStatus, OrderFulfillmentStatus } from '@multichannel/shared';
+import {
+  ChannelConnection,
+  WebhookEvent,
+  Order,
+  OrderLine,
+  InventoryItem,
+  InventoryMovement,
+  ChannelProduct,
+  ProductMapping,
+} from '../../database/models';
+import {
+  ChannelType,
+  OrderFinancialStatus,
+  OrderFulfillmentStatus,
+  InventoryChangeType,
+} from '@multichannel/shared';
 import { decryptSecret } from '../../utils/crypto';
 import { logger } from '../../utils/logger';
 
@@ -63,6 +77,10 @@ export class WebhooksController {
       // Handle specific topics
       if (topic === 'orders/create' || topic === 'orders/paid') {
         await WebhooksController.processShopifyOrder(connection, req.body);
+      } else if (topic === 'inventory_levels/update') {
+        await WebhooksController.processShopifyInventoryUpdate(connection, req.body);
+      } else if (topic === 'products/update') {
+        await WebhooksController.processShopifyProductUpdate(connection, req.body);
       }
 
       eventDoc.status = 'PROCESSED';
@@ -246,6 +264,99 @@ export class WebhooksController {
       logger.info(`Shopify order ${order.orderNumber} successfully processed from webhook`);
     } catch (err: any) {
       logger.error('Failed to process Shopify order from webhook:', err);
+    }
+  }
+
+  private static async processShopifyInventoryUpdate(connection: any, payload: any) {
+    try {
+      const inventoryItemId = String(payload.inventory_item_id);
+      const available = typeof payload.available === 'number' ? payload.available : parseInt(payload.available);
+
+      if (!inventoryItemId || isNaN(available)) return;
+
+      const chProd = await ChannelProduct.findOne({
+        organizationId: connection.organizationId,
+        channelConnectionId: connection._id,
+        $or: [
+          { 'rawPayload.variant.inventory_item_id': inventoryItemId },
+          { externalVariantId: inventoryItemId },
+        ],
+      });
+
+      if (!chProd) return;
+
+      chProd.inventoryQuantity = available;
+      chProd.lastSyncedAt = new Date();
+      await chProd.save();
+
+      const mapping = await ProductMapping.findOne({
+        organizationId: connection.organizationId,
+        channelProductId: chProd._id,
+        status: 'MAPPED',
+        syncInventory: true,
+      });
+
+      if (mapping) {
+        const item = await InventoryItem.findOne({
+          organizationId: connection.organizationId,
+          canonicalVariantId: mapping.canonicalVariantId,
+        });
+
+        if (item) {
+          const previousStock = item.trackedStock;
+          item.trackedStock = available;
+          item.availableToAllocate = Math.max(0, available - item.reservedStock - item.safetyStock);
+          item.version += 1;
+          await item.save();
+
+          await InventoryMovement.create({
+            organizationId: connection.organizationId,
+            canonicalVariantId: item.canonicalVariantId,
+            changeType: InventoryChangeType.RECONCILIATION,
+            quantityChanged: available - previousStock,
+            previousTrackedStock: previousStock,
+            newTrackedStock: available,
+            reason: 'Webhook: Shopify inventory_levels/update',
+          });
+
+          logger.info(`Updated canonical stock for SKU ${item.sku} from Shopify webhook: ${available}`);
+        }
+      }
+    } catch (err: any) {
+      logger.error('Failed to process Shopify inventory webhook:', err);
+    }
+  }
+
+  private static async processShopifyProductUpdate(connection: any, payload: any) {
+    try {
+      const productId = String(payload.id);
+      if (!productId || !Array.isArray(payload.variants)) return;
+
+      for (const v of payload.variants) {
+        const variantId = String(v.id);
+        const price = parseFloat(v.price) || 0;
+        const qty = v.inventory_quantity || 0;
+
+        await ChannelProduct.findOneAndUpdate(
+          {
+            organizationId: connection.organizationId,
+            channelConnectionId: connection._id,
+            externalProductId: productId,
+            externalVariantId: variantId,
+          },
+          {
+            title: `${payload.title} - ${v.title}`,
+            sku: (v.sku && v.sku.trim()) || `SHOPIFY-${v.id}`,
+            price,
+            inventoryQuantity: qty,
+            lastSyncedAt: new Date(),
+            rawPayload: { product: payload, variant: v },
+          }
+        );
+      }
+      logger.info(`Updated channel listings for Shopify product ${productId} from webhook`);
+    } catch (err: any) {
+      logger.error('Failed to process Shopify product webhook:', err);
     }
   }
 }

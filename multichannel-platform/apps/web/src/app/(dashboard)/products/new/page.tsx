@@ -41,6 +41,7 @@ export default function AddProductPage() {
   ]);
 
   const [error, setError] = useState<string | null>(null);
+  const [publishImmediately, setPublishImmediately] = useState(true);
 
   const addVariant = () => {
     setVariants([
@@ -75,7 +76,16 @@ export default function AddProductPage() {
         variants,
       };
       const res: any = await api.post('/products', payload);
-      return res.data;
+      const created = res.data;
+
+      if (publishImmediately && created?._id) {
+        try {
+          await api.post(`/products/${created._id}/publish`, {});
+        } catch (pubErr: any) {
+          console.warn('Could not auto-publish to store:', pubErr);
+        }
+      }
+      return created;
     },
     onSuccess: () => {
       router.push('/products');
@@ -276,6 +286,28 @@ export default function AddProductPage() {
           </div>
         </div>
 
+        {/* Channel Publishing Card */}
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <span className="text-base">🛍️</span>
+              <span>Publish Directly to Connected Shopify Store</span>
+            </h3>
+            <p className="text-xs text-slate-400 mt-1">
+              Automatically creates this product on your live Shopify store, uploads variants with initial stock, and links them for real-time synchronization.
+            </p>
+          </div>
+          <label className="relative inline-flex items-center cursor-pointer shrink-0 ml-4">
+            <input
+              type="checkbox"
+              checked={publishImmediately}
+              onChange={(e) => setPublishImmediately(e.target.checked)}
+              className="sr-only peer"
+            />
+            <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+          </label>
+        </div>
+
         {/* Submit */}
         <div className="flex items-center justify-end gap-4">
           <Link
@@ -289,7 +321,11 @@ export default function AddProductPage() {
             disabled={createMutation.isPending}
             className="bg-brand-600 hover:bg-brand-500 text-white text-xs font-bold px-6 py-2.5 rounded-xl shadow-lg shadow-brand-600/30 transition disabled:opacity-50"
           >
-            {createMutation.isPending ? 'Creating Product...' : 'Save & Initialize Inventory'}
+            {createMutation.isPending
+              ? 'Creating & Publishing...'
+              : publishImmediately
+              ? 'Create & Publish to Shopify'
+              : 'Save & Initialize Inventory'}
           </button>
         </div>
       </form>

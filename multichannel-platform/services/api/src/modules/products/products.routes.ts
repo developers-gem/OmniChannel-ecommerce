@@ -14,6 +14,7 @@ router.get('/', ProductsController.list);
 router.get('/:id', ProductsController.getById);
 router.post('/', validate(CreateProductSchema), ProductsController.create);
 router.put('/:id', ProductsController.update);
+router.post('/:id/publish', ProductsController.publish);
 router.delete('/:id', ProductsController.delete);
 
 export default router;

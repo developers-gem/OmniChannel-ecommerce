@@ -7,10 +7,13 @@ import {
   ProductVariant,
   CanonicalProduct,
   ChannelConnection,
+  ProductMapping,
+  ChannelProduct,
 } from '../../database/models';
-import { InventoryChangeType, AllocationType } from '@multichannel/shared';
+import { InventoryChangeType, AllocationType, ChannelType } from '@multichannel/shared';
 import { runInTransaction } from '../../database';
 import { logger } from '../../utils/logger';
+import { ShopifyService } from '../../services/shopify.service';
 
 export class InventoryController {
   // GET /api/v1/inventory - List stock items with available-to-allocate and low stock flags
@@ -118,6 +121,43 @@ export class InventoryController {
         logger.info(`Stock adjusted for SKU ${item.sku}: ${previousStock} -> ${newStock} (${reason})`);
         return item;
       });
+
+      // Asynchronously propagate stock update to mapped channels (Shopify)
+      setTimeout(async () => {
+        try {
+          const mappings = await ProductMapping.find({
+            organizationId: req.tenantId,
+            canonicalVariantId: variantId,
+            syncInventory: true,
+          })
+            .populate('channelConnectionId')
+            .populate('channelProductId');
+
+          for (const m of mappings) {
+            const conn: any = m.channelConnectionId;
+            const chProd: any = m.channelProductId;
+
+            if (conn?.channelType === ChannelType.SHOPIFY && chProd) {
+              const invItemId = chProd.rawPayload?.variant?.inventory_item_id;
+              if (invItemId) {
+                const { domain, token } = ShopifyService.getCredentials(conn);
+                await ShopifyService.setInventoryLevel(
+                  domain,
+                  token,
+                  String(invItemId),
+                  updatedItem.availableToAllocate
+                );
+                chProd.inventoryQuantity = updatedItem.availableToAllocate;
+                chProd.lastSyncedAt = new Date();
+                await chProd.save();
+                logger.info(`Propagated inventory adjustment for SKU ${updatedItem.sku} to ${conn.name}`);
+              }
+            }
+          }
+        } catch (syncErr: any) {
+          logger.warn(`Failed to propagate inventory adjustment to channels: ${syncErr.message}`);
+        }
+      }, 100);
 
       return res.json({
         success: true,

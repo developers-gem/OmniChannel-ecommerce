@@ -23,6 +23,7 @@ export interface ICanonicalProductDocument extends Document {
   updatedAt: Date;
 }
 
+
 const CanonicalProductSchema = new Schema<ICanonicalProductDocument>(
   {
     organizationId: {
@@ -61,14 +62,38 @@ const CanonicalProductSchema = new Schema<ICanonicalProductDocument>(
       type: [String],
       default: [],
     },
-    images: [
-      {
-        url: { type: String, required: true },
-        altText: String,
-        position: { type: Number, default: 0 },
-        isPrimary: { type: Boolean, default: false },
+    images: {
+      type: [
+        {
+          _id: false,
+          url: { type: String, required: true },
+          altText: { type: String, default: '' },
+          position: { type: Number, default: 0 },
+          isPrimary: { type: Boolean, default: false },
+        },
+      ],
+      set: function (val: any) {
+        if (!val) return [];
+        const arr = Array.isArray(val) ? val : [val];
+        return arr
+          .map((item: any, idx: number) => {
+            if (typeof item === 'string') {
+              return { url: item, altText: '', position: idx, isPrimary: idx === 0 };
+            }
+            if (item && typeof item === 'object') {
+              return {
+                url: item.url || item.src || '',
+                altText: item.altText || item.alt || '',
+                position: typeof item.position === 'number' ? item.position : idx,
+                isPrimary: item.isPrimary ?? idx === 0,
+              };
+            }
+            return null;
+          })
+          .filter((img: any) => img && typeof img.url === 'string' && img.url.trim().length > 0);
       },
-    ],
+      default: [],
+    },
     status: {
       type: String,
       enum: Object.values(ProductStatus),

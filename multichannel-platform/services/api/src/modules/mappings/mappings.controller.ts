@@ -99,21 +99,39 @@ export class MappingsController {
           }
         }
 
-        // 3. Title similarity suggestion (Never auto-merge, suggest only)
+        // 3. Exact or Base Title match (Safe, prevents false positives)
         if (!matchCandidate && cp.title) {
+          const cleanCpTitle = cp.title.trim().toLowerCase();
+          const baseCpTitle = cleanCpTitle.split(' - ')[0].trim();
+          const escapedBase = baseCpTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const escapedFull = cleanCpTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
           const product = await CanonicalProduct.findOne({
             organizationId: req.tenantId,
-            $text: { $search: cp.title },
+            $or: [
+              { title: { $regex: `^${escapedBase}$`, $options: 'i' } },
+              { title: { $regex: `^${escapedFull}$`, $options: 'i' } },
+            ],
           });
 
           if (product) {
-            const variant = await ProductVariant.findOne({
+            let variant = await ProductVariant.findOne({
               canonicalProductId: product._id,
+              organizationId: req.tenantId,
+              title: { $regex: escapedFull, $options: 'i' },
             });
+
+            if (!variant) {
+              variant = await ProductVariant.findOne({
+                canonicalProductId: product._id,
+                organizationId: req.tenantId,
+              });
+            }
+
             if (variant) {
               matchCandidate = variant;
               confidence = MappingConfidence.AI_SUGGESTED;
-              matchReason = `Title similarity suggestion`;
+              matchReason = `Title match ("${product.title}")`;
             }
           }
         }
@@ -245,7 +263,10 @@ export class MappingsController {
                 channelConnectionId: channelProduct.channelConnectionId,
                 channelProductId: channelProduct._id,
                 channelType: channelProduct.channelType,
-                mappingConfidence: MappingConfidence.EXACT_SKU,
+                mappingConfidence:
+                  channelProduct.sku === variant.sku
+                    ? MappingConfidence.EXACT_SKU
+                    : (item.confidence || MappingConfidence.MANUAL),
                 syncPrice: true,
                 syncInventory: true,
                 status: MappingStatus.MAPPED,
@@ -294,6 +315,31 @@ export class MappingsController {
       return res.status(500).json({
         success: false,
         error: { message: error.message || 'Failed to unmap listing' },
+      });
+    }
+  }
+
+  // DELETE /api/v1/mappings - Reset all mappings or unmap in bulk
+  static async unmapAll(req: Request, res: Response) {
+    try {
+      const { channelConnectionId } = req.query;
+      const query: any = { organizationId: req.tenantId };
+      if (channelConnectionId) {
+        query.channelConnectionId = channelConnectionId;
+      }
+
+      const result = await ProductMapping.deleteMany(query);
+      return res.json({
+        success: true,
+        data: {
+          deletedCount: result.deletedCount,
+          message: `Successfully unmapped ${result.deletedCount} listings`,
+        },
+      });
+    } catch (error: any) {
+      return res.status(500).json({
+        success: false,
+        error: { message: error.message || 'Failed to unmap all listings' },
       });
     }
   }
