@@ -35,13 +35,20 @@ import webhookRoutes from './modules/webhooks/webhooks.routes';
 const app = express();
 
 // Security and middleware
-app.use(helmet());
 app.use(
-  cors({
-    origin: '*',
-    credentials: true,
+  helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
   })
 );
+app.use(
+  cors({
+    origin: true,
+    credentials: true,
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+  })
+);
+app.options('*', cors({ origin: true, credentials: true }));
 
 app.use(
   express.json({
