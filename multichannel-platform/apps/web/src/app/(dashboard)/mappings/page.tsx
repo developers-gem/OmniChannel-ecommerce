@@ -17,12 +17,16 @@ import {
   HelpCircle,
   ArrowDownToLine,
   Info,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { MappingConfidence } from '@multichannel/shared';
 
 export default function MappingPage() {
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<'mapped' | 'suggestions'>('mapped');
+  const [mappingsPage, setMappingsPage] = useState(1);
+  const [mappingsLimit, setMappingsLimit] = useState(20);
   const [showInfoBanner, setShowInfoBanner] = useState(true);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [confirmReimportChannel, setConfirmReimportChannel] = useState<{
@@ -38,13 +42,16 @@ export default function MappingPage() {
   const [importingChannelId, setImportingChannelId] = useState<string | null>(null);
 
   // Fetch mapped listings
-  const { data: mappingsData, isLoading: mappingsLoading } = useQuery({
-    queryKey: ['product-mappings'],
+  const { data: mappingsResponse, isLoading: mappingsLoading } = useQuery({
+    queryKey: ['product-mappings', mappingsPage, mappingsLimit],
     queryFn: async () => {
-      const res: any = await api.get('/mappings');
-      return res.data;
+      const res: any = await api.get(`/mappings?page=${mappingsPage}&limit=${mappingsLimit}`);
+      return res;
     },
   });
+
+  const mappingsData = mappingsResponse?.data || [];
+  const mappingsPagination = mappingsResponse?.pagination;
 
   // Fetch connected channels
   const { data: channelsData, isLoading: channelsLoading } = useQuery({
@@ -335,9 +342,9 @@ export default function MappingPage() {
         >
           <Link2 className="w-3.5 h-3.5 text-blue-400" />
           <span>Active Mappings</span>
-          {mappingsData && mappingsData.length > 0 && (
+          {(mappingsPagination?.total !== undefined || (mappingsData && mappingsData.length > 0)) && (
             <span className="bg-slate-700 text-slate-300 px-2 py-0.5 rounded-full text-[10px] font-bold">
-              {mappingsData.length}
+              {mappingsPagination?.total ?? mappingsData.length}
             </span>
           )}
         </button>
@@ -465,6 +472,93 @@ export default function MappingPage() {
               </tbody>
             </table>
           </div>
+
+          {/* Pagination Bar for Active Mappings */}
+          {mappingsPagination && mappingsPagination.total > 0 && (
+            <div className="p-4 border-t border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3 bg-slate-900/60 text-xs">
+              <div className="flex items-center gap-3 text-slate-400">
+                <span>
+                  Showing{' '}
+                  <strong className="text-white">
+                    {Math.min((mappingsPage - 1) * mappingsLimit + 1, mappingsPagination.total)}
+                  </strong>{' '}
+                  to{' '}
+                  <strong className="text-white">
+                    {Math.min(mappingsPage * mappingsLimit, mappingsPagination.total)}
+                  </strong>{' '}
+                  of <strong className="text-white">{mappingsPagination.total}</strong> mappings
+                </span>
+                <div className="flex items-center gap-1.5 pl-3 border-l border-slate-800">
+                  <span className="text-[11px] text-slate-500">Per page:</span>
+                  <select
+                    value={mappingsLimit}
+                    onChange={(e) => {
+                      setMappingsLimit(Number(e.target.value));
+                      setMappingsPage(1);
+                    }}
+                    className="bg-slate-800 border border-slate-700 text-slate-300 rounded-lg px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand-500 cursor-pointer"
+                  >
+                    <option value={20}>20</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setMappingsPage((prev) => Math.max(prev - 1, 1))}
+                  disabled={mappingsPage <= 1}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-700/80 bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                  <span>Prev</span>
+                </button>
+
+                <div className="flex items-center gap-1">
+                  {Array.from({ length: mappingsPagination.totalPages }, (_, i) => i + 1)
+                    .filter((pNum) => {
+                      if (mappingsPagination.totalPages <= 7) return true;
+                      if (pNum === 1 || pNum === mappingsPagination.totalPages) return true;
+                      return Math.abs(pNum - mappingsPage) <= 1;
+                    })
+                    .map((pNum, idx, arr) => {
+                      const prevNum = arr[idx - 1];
+                      const showEllipsis = prevNum && pNum - prevNum > 1;
+                      return (
+                        <React.Fragment key={pNum}>
+                          {showEllipsis && (
+                            <span className="px-1 text-slate-500 text-xs">...</span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setMappingsPage(pNum)}
+                            className={`min-w-8 h-8 px-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                              mappingsPage === pNum
+                                ? 'bg-brand-600 text-white shadow-md shadow-brand-600/30'
+                                : 'bg-slate-800/60 hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-700/60'
+                            }`}
+                          >
+                            {pNum}
+                          </button>
+                        </React.Fragment>
+                      );
+                    })}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setMappingsPage((prev) => Math.min(prev + 1, mappingsPagination.totalPages))}
+                  disabled={mappingsPage >= mappingsPagination.totalPages}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-700/80 bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  <span>Next</span>
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

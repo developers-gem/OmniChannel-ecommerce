@@ -24,12 +24,15 @@ import {
   Globe,
   Tag,
   Check,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 
 export default function ProductsPage() {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(15);
   const [statusFilter, setStatusFilter] = useState('');
   const [publishingId, setPublishingId] = useState<string | null>(null);
   const [isImporting, setIsImporting] = useState(false);
@@ -58,9 +61,9 @@ export default function ProductsPage() {
 
   // Fetch Canonical Products
   const { data: productResponse, isLoading } = useQuery({
-    queryKey: ['canonical-products', search, page, statusFilter],
+    queryKey: ['canonical-products', search, page, pageSize, statusFilter],
     queryFn: async () => {
-      let url = `/products?page=${page}&limit=15`;
+      let url = `/products?page=${page}&limit=${pageSize}`;
       if (search) url += `&search=${encodeURIComponent(search)}`;
       if (statusFilter) url += `&status=${statusFilter}`;
       const res: any = await api.get(url);
@@ -81,7 +84,7 @@ export default function ProductsPage() {
   const { data: mappingsData } = useQuery({
     queryKey: ['product-mappings'],
     queryFn: async () => {
-      const res: any = await api.get('/mappings');
+      const res: any = await api.get('/mappings?limit=250');
       return res.data || [];
     },
   });
@@ -274,7 +277,14 @@ export default function ProductsPage() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-white">Canonical Catalog</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold tracking-tight text-white">Canonical Catalog</h1>
+            {pagination?.total !== undefined && (
+              <span className="bg-slate-800 border border-slate-700 text-slate-300 text-xs font-bold px-2.5 py-0.5 rounded-full">
+                {pagination.total} Master Products
+              </span>
+            )}
+          </div>
           <p className="text-xs text-slate-400 mt-1">
             Internal master catalog synchronized across Shopify, eBay, and external storefronts
           </p>
@@ -490,6 +500,94 @@ export default function ProductsPage() {
             </tbody>
           </table>
         </div>
+
+        {/* Pagination Bar */}
+        {pagination && pagination.total > 0 && (
+          <div className="p-4 border-t border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3 bg-slate-900/60 text-xs">
+            <div className="flex items-center gap-3 text-slate-400">
+              <span>
+                Showing{' '}
+                <strong className="text-white">
+                  {Math.min((page - 1) * pageSize + 1, pagination.total)}
+                </strong>{' '}
+                to{' '}
+                <strong className="text-white">
+                  {Math.min(page * pageSize, pagination.total)}
+                </strong>{' '}
+                of <strong className="text-white">{pagination.total}</strong> products
+              </span>
+              <div className="flex items-center gap-1.5 pl-3 border-l border-slate-800">
+                <span className="text-[11px] text-slate-500">Per page:</span>
+                <select
+                  value={pageSize}
+                  onChange={(e) => {
+                    setPageSize(Number(e.target.value));
+                    setPage(1);
+                  }}
+                  className="bg-slate-800 border border-slate-700 text-slate-300 rounded-lg px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand-500 cursor-pointer"
+                >
+                  <option value={15}>15</option>
+                  <option value={25}>25</option>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setPage((prev) => Math.max(prev - 1, 1))}
+                disabled={page <= 1}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-700/80 bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+                <span>Prev</span>
+              </button>
+
+              <div className="flex items-center gap-1">
+                {Array.from({ length: pagination.totalPages }, (_, i) => i + 1)
+                  .filter((pNum) => {
+                    if (pagination.totalPages <= 7) return true;
+                    if (pNum === 1 || pNum === pagination.totalPages) return true;
+                    return Math.abs(pNum - page) <= 1;
+                  })
+                  .map((pNum, idx, arr) => {
+                    const prevNum = arr[idx - 1];
+                    const showEllipsis = prevNum && pNum - prevNum > 1;
+                    return (
+                      <React.Fragment key={pNum}>
+                        {showEllipsis && (
+                          <span className="px-1 text-slate-500 text-xs">...</span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setPage(pNum)}
+                          className={`min-w-8 h-8 px-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                            page === pNum
+                              ? 'bg-brand-600 text-white shadow-md shadow-brand-600/30'
+                              : 'bg-slate-800/60 hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-700/60'
+                          }`}
+                        >
+                          {pNum}
+                        </button>
+                      </React.Fragment>
+                    );
+                  })}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setPage((prev) => Math.min(prev + 1, pagination.totalPages))}
+                disabled={page >= pagination.totalPages}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-700/80 bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+              >
+                <span>Next</span>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* MODAL 1: Import Products from Channels Modal */}
