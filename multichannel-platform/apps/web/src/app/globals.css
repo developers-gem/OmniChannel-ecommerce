@@ -2,31 +2,142 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --background: #090d16;
+/* =========================================================================
+   THEME DEFINITIONS (OmniChannel Multi-Store Hub)
+   Supported Themes:
+   1. Emerald Obsidian (Default - Fintech & High-Contrast Commerce)
+   2. Sapphire Horizon (Midnight Navy & Electric Blue Command Center)
+   3. Cosmic Amethyst (Royal Nebula & Cosmic Violet AI Hub)
+   4. Sunset Amber (Warm Espresso Titanium & Radiant Gold)
+   ========================================================================= */
+
+/* Theme 1: Emerald Obsidian (Default) */
+:root,
+html[data-theme='emerald'] {
+  --color-slate-950: 2 6 23;
+  --color-slate-900: 15 23 42;
+  --color-slate-850: 21 31 50;
+  --color-slate-800: 30 41 59;
+  --color-slate-700: 51 65 85;
+
+  --color-brand-50: 240 253 244;
+  --color-brand-100: 220 252 231;
+  --color-brand-200: 187 247 208;
+  --color-brand-300: 134 239 172;
+  --color-brand-400: 74 222 128;
+  --color-brand-500: 34 197 94;
+  --color-brand-600: 22 163 74;
+  --color-brand-700: 21 128 61;
+  --color-brand-800: 22 101 52;
+  --color-brand-900: 20 83 45;
+  --color-brand-950: 5 46 22;
+
+  --background: #020617;
   --foreground: #f8fafc;
   --card: #0f172a;
   --card-border: #1e293b;
   --accent: #22c55e;
 }
 
+/* Theme 2: Sapphire Horizon (Midnight Navy & Electric Blue) */
+html[data-theme='sapphire'] {
+  --color-slate-950: 5 11 26;
+  --color-slate-900: 11 21 44;
+  --color-slate-850: 16 30 62;
+  --color-slate-800: 26 44 86;
+  --color-slate-700: 42 66 122;
+
+  --color-brand-50: 239 246 255;
+  --color-brand-100: 219 234 254;
+  --color-brand-200: 191 219 254;
+  --color-brand-300: 147 197 253;
+  --color-brand-400: 96 165 250;
+  --color-brand-500: 59 130 246;
+  --color-brand-600: 37 99 235;
+  --color-brand-700: 29 78 216;
+  --color-brand-800: 30 64 175;
+  --color-brand-900: 30 58 138;
+  --color-brand-950: 10 25 58;
+
+  --background: #050b1a;
+  --foreground: #f8fafc;
+  --card: #0b152c;
+  --card-border: #1a2c56;
+  --accent: #3b82f6;
+}
+
+/* Theme 3: Cosmic Amethyst (Royal Nebula & Cosmic Violet) */
+html[data-theme='amethyst'] {
+  --color-slate-950: 11 8 22;
+  --color-slate-900: 20 15 38;
+  --color-slate-850: 29 22 54;
+  --color-slate-800: 45 35 80;
+  --color-slate-700: 68 53 118;
+
+  --color-brand-50: 250 245 255;
+  --color-brand-100: 243 232 255;
+  --color-brand-200: 233 213 255;
+  --color-brand-300: 216 180 254;
+  --color-brand-400: 192 132 252;
+  --color-brand-500: 168 85 247;
+  --color-brand-600: 147 51 234;
+  --color-brand-700: 126 34 206;
+  --color-brand-800: 107 33 168;
+  --color-brand-900: 88 28 135;
+  --color-brand-950: 42 12 68;
+
+  --background: #0b0816;
+  --foreground: #f8fafc;
+  --card: #140f26;
+  --card-border: #2d2350;
+  --accent: #a855f7;
+}
+
+/* Theme 4: Sunset Amber (Titanium Charcoal & Radiant Gold) */
+html[data-theme='amber'] {
+  --color-slate-950: 16 13 10;
+  --color-slate-900: 26 21 16;
+  --color-slate-850: 36 29 23;
+  --color-slate-800: 54 44 35;
+  --color-slate-700: 82 67 54;
+
+  --color-brand-50: 255 251 235;
+  --color-brand-100: 254 243 199;
+  --color-brand-200: 253 230 138;
+  --color-brand-300: 252 211 77;
+  --color-brand-400: 251 191 36;
+  --color-brand-500: 245 158 11;
+  --color-brand-600: 217 119 6;
+  --color-brand-700: 180 83 9;
+  --color-brand-800: 146 64 14;
+  --color-brand-900: 120 53 15;
+  --color-brand-950: 52 26 8;
+
+  --background: #100d0a;
+  --foreground: #f8fafc;
+  --card: #1a1510;
+  --card-border: #362c23;
+  --accent: #f59e0b;
+}
+
 body {
   background-color: var(--background);
   color: var(--foreground);
-  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
   overflow-x: hidden;
+  transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 /* Glassmorphism utilities */
 .glass-panel {
-  background: rgba(15, 23, 42, 0.75);
+  background: rgba(var(--color-slate-900), 0.75);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .glass-card {
-  background: rgba(30, 41, 59, 0.5);
+  background: rgba(var(--color-slate-800), 0.5);
   backdrop-filter: blur(8px);
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
@@ -37,12 +148,12 @@ body {
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #0f172a;
+  background: rgb(var(--color-slate-900));
 }
 ::-webkit-scrollbar-thumb {
-  background: #334155;
+  background: rgb(var(--color-slate-700));
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #475569;
+  background: rgb(var(--color-brand-500) / 0.7);
 }

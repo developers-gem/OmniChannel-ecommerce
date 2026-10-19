@@ -44,7 +44,7 @@ export function Sidebar() {
     <aside className="w-64 bg-slate-900 border-r border-slate-800 flex flex-col h-screen fixed left-0 top-0 z-30 select-none">
       {/* Platform Branding */}
       <div className="h-16 flex items-center px-6 border-b border-slate-800 gap-3">
-        <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-brand-600 to-emerald-400 flex items-center justify-center shadow-lg shadow-brand-500/20">
+        <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-brand-600 to-brand-400 flex items-center justify-center shadow-lg shadow-brand-500/20">
           <Layers className="w-5 h-5 text-white" />
         </div>
         <div>

@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react';
 import './globals.css';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useAuthStore } from '@/lib/store';
+import { useThemeStore } from '@/lib/theme';
 
 export default function RootLayout({
   children,
@@ -24,13 +25,15 @@ export default function RootLayout({
   );
 
   const initializeAuth = useAuthStore((s) => s.initialize);
+  const initializeTheme = useThemeStore((s) => s.initializeTheme);
 
   useEffect(() => {
     initializeAuth();
-  }, [initializeAuth]);
+    initializeTheme();
+  }, [initializeAuth, initializeTheme]);
 
   return (
-    <html lang="en" className="dark">
+    <html lang="en" className="dark" data-theme="emerald" suppressHydrationWarning>
       <head>
         <title>OmniChannel Platform — Multi-Store Centralized Hub</title>
         <meta
@@ -42,6 +45,11 @@ export default function RootLayout({
         <link
           href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
           rel="stylesheet"
+        />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `try{var t=localStorage.getItem('omnichannel_theme')||'emerald';document.documentElement.setAttribute('data-theme',t);}catch(e){}`,
+          }}
         />
       </head>
       <body className="bg-slate-950 text-slate-100 min-h-screen font-sans antialiased">
