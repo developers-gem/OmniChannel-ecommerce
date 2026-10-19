@@ -449,7 +449,7 @@ export class ProductsController {
   static async publish(req: Request, res: Response) {
     try {
       const { id } = req.params;
-      const { channelConnectionId, forceRepublish } = req.body;
+      const { channelConnectionId, channelConnectionIds, forceRepublish } = req.body;
 
       const product = await CanonicalProduct.findOne({
         _id: id,
@@ -486,8 +486,13 @@ export class ProductsController {
         organizationId: req.tenantId,
         status: ChannelStatus.ACTIVE,
       };
-      if (channelConnectionId) {
-        connQuery._id = channelConnectionId;
+
+      const targetIds = Array.isArray(channelConnectionIds) && channelConnectionIds.length > 0
+        ? channelConnectionIds
+        : (channelConnectionId ? (Array.isArray(channelConnectionId) ? channelConnectionId : [channelConnectionId]) : null);
+
+      if (targetIds && targetIds.length > 0) {
+        connQuery._id = { $in: targetIds };
       }
       const connections = await ChannelConnection.find(connQuery);
 
@@ -499,7 +504,7 @@ export class ProductsController {
       }
 
       // Check if product is already mapped to the target channel (avoid duplicate pushing/mapping)
-      if (channelConnectionId && !forceRepublish) {
+      if (connections.length === 1 && !forceRepublish) {
         const existingMappings = await ProductMapping.find({
           organizationId: req.tenantId,
           canonicalProductId: product._id,
