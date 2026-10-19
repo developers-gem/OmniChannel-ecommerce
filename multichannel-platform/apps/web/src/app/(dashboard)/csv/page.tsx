@@ -27,6 +27,7 @@ import {
   AlertTriangle,
   HelpCircle,
 } from 'lucide-react';
+import { useCurrency } from '@/lib/currency';
 
 function formatFileSize(bytes: number): string {
   if (bytes === 0) return '0 Bytes';
@@ -55,6 +56,7 @@ interface ParsedProductItem {
 
 export default function CsvImportPage() {
   const queryClient = useQueryClient();
+  const { format, symbol } = useCurrency();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [file, setFile] = useState<File | null>(null);
@@ -746,7 +748,7 @@ APP-HOOD-SAMPLE,Heavyweight Pullover Hoodie,Nordic Wear,Apparel,Fleece-lined hea
 
                           {/* Price */}
                           <td className="py-2.5 px-3 text-right font-mono font-bold text-white text-xs">
-                            {item.retailPrice !== undefined ? `$${Number(item.retailPrice).toFixed(2)}` : '$0.00'}
+                            {format(item.retailPrice ?? 0)}
                           </td>
 
                           {/* Quantity */}
@@ -885,7 +887,7 @@ APP-HOOD-SAMPLE,Heavyweight Pullover Hoodie,Nordic Wear,Apparel,Fleece-lined hea
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                    Price ($)
+                    Price ({symbol})
                   </label>
                   <input
                     type="number"

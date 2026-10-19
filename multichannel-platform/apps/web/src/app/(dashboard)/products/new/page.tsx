@@ -23,10 +23,12 @@ import {
   ShieldCheck,
   Sparkles,
 } from 'lucide-react';
+import { useCurrency } from '@/lib/currency';
 
 export default function AddProductPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
+  const { symbol, format } = useCurrency();
 
   const [formData, setFormData] = useState({
     title: 'Wireless Active Noise-Cancelling Headphones',
@@ -505,7 +507,7 @@ export default function AddProductPage() {
 
                 <div>
                   <label className="block text-[10px] font-semibold text-slate-400 uppercase">
-                    Retail Price ($)
+                    Retail Price ({symbol})
                   </label>
                   <input
                     type="number"
@@ -748,7 +750,7 @@ export default function AddProductPage() {
                 <span>&bull;</span>
                 <span>{variants.length} Variant(s)</span>
                 <span>&bull;</span>
-                <span>Retail: <strong className="text-emerald-400">${formData.defaultRetailPrice?.toFixed(2)}</strong></span>
+                <span>Retail: <strong className="text-emerald-400">{format(formData.defaultRetailPrice)}</strong></span>
               </div>
             </div>
 

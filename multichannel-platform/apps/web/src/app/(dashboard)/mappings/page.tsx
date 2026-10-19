@@ -21,9 +21,11 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import { MappingConfidence } from '@multichannel/shared';
+import { useCurrency } from '@/lib/currency';
 
 export default function MappingPage() {
   const queryClient = useQueryClient();
+  const { format } = useCurrency();
   const [activeTab, setActiveTab] = useState<'mapped' | 'suggestions'>('mapped');
   const [mappingsPage, setMappingsPage] = useState(1);
   const [mappingsLimit, setMappingsLimit] = useState(20);
@@ -402,7 +404,7 @@ export default function MappingPage() {
                           </span>
                           {m.channelProductId?.price !== undefined && (
                             <span className="text-[10px] text-slate-500 font-mono">
-                              &bull; ${m.channelProductId.price.toFixed(2)}
+                              &bull; {format(m.channelProductId.price)}
                             </span>
                           )}
                         </div>
@@ -595,7 +597,7 @@ export default function MappingPage() {
                         <span>UPC: {item.channelProduct.barcode}</span>
                       )}
                       <span className="text-white font-semibold">
-                        ${item.channelProduct.price?.toFixed(2)}
+                        {format(item.channelProduct.price ?? 0)}
                       </span>
                     </div>
                   </div>

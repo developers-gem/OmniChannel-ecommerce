@@ -24,8 +24,10 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts';
+import { useCurrency } from '@/lib/currency';
 
 export default function PnLPage() {
+  const { format, symbol } = useCurrency();
   const [activeTab, setActiveTab] = useState<'overview' | 'products' | 'channels'>('overview');
 
   const { data: summaryData, isLoading: summaryLoading } = useQuery({
@@ -120,7 +122,7 @@ export default function PnLPage() {
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg">
           <span className="text-xs font-semibold uppercase text-slate-500 block">Net Revenue</span>
           <div className="text-2xl font-extrabold text-white mt-1">
-            ${metrics.netRevenue?.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+            {format(metrics.netRevenue)}
           </div>
           <span className="text-[11px] text-slate-400 mt-1 block">
             After discounts & refunds
@@ -130,7 +132,7 @@ export default function PnLPage() {
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg">
           <span className="text-xs font-semibold uppercase text-slate-500 block">Cost of Goods (COGS)</span>
           <div className="text-2xl font-extrabold text-amber-400 mt-1">
-            ${metrics.totalCOGS?.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+            {format(metrics.totalCOGS)}
           </div>
           <span className="text-[11px] text-slate-400 mt-1 block">Frozen historical batch cost</span>
         </div>
@@ -138,7 +140,7 @@ export default function PnLPage() {
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg">
           <span className="text-xs font-semibold uppercase text-slate-500 block">Gross Profit</span>
           <div className="text-2xl font-extrabold text-emerald-400 mt-1">
-            ${metrics.grossProfit?.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+            {format(metrics.grossProfit)}
           </div>
           <div className="text-[11px] text-emerald-400 font-semibold mt-1">
             {metrics.grossMarginPercentage}% Gross Margin
@@ -148,7 +150,7 @@ export default function PnLPage() {
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg">
           <span className="text-xs font-semibold uppercase text-slate-500 block">Net Contribution</span>
           <div className="text-2xl font-extrabold text-blue-400 mt-1">
-            ${metrics.netContribution?.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+            {format(metrics.netContribution)}
           </div>
           <div className="text-[11px] text-blue-400 font-semibold mt-1">
             {metrics.netMarginPercentage}% Net Margin
@@ -186,7 +188,7 @@ export default function PnLPage() {
                       strokeWidth={2}
                       fill="#22c55e"
                       fillOpacity={0.15}
-                      name="Revenue ($)"
+                      name={`Revenue (${symbol})`}
                     />
                     <Area
                       type="monotone"
@@ -195,7 +197,7 @@ export default function PnLPage() {
                       strokeWidth={2}
                       fill="#3b82f6"
                       fillOpacity={0.15}
-                      name="Gross Profit ($)"
+                      name={`Gross Profit (${symbol})`}
                     />
                   </AreaChart>
                 </ResponsiveContainer>
@@ -214,7 +216,7 @@ export default function PnLPage() {
                 Marketplace Platform Fees
               </span>
               <div className="text-xl font-bold text-white">
-                ${metrics.totalMarketplaceFees?.toFixed(2)}
+                {format(metrics.totalMarketplaceFees)}
               </div>
               <p className="text-[11px] text-slate-500 mt-1">Shopify and eBay take-rates</p>
             </div>
@@ -224,7 +226,7 @@ export default function PnLPage() {
                 Payment Gateway Fees
               </span>
               <div className="text-xl font-bold text-white">
-                ${metrics.totalPaymentFees?.toFixed(2)}
+                {format(metrics.totalPaymentFees)}
               </div>
               <p className="text-[11px] text-slate-500 mt-1">Stripe, PayPal, Shopify Payments</p>
             </div>
@@ -234,7 +236,7 @@ export default function PnLPage() {
                 Outbound Shipping Expenses
               </span>
               <div className="text-xl font-bold text-white">
-                ${metrics.totalShippingExpenses?.toFixed(2)}
+                {format(metrics.totalShippingExpenses)}
               </div>
               <p className="text-[11px] text-slate-500 mt-1">Postage & carrier label costs</p>
             </div>
@@ -280,17 +282,17 @@ export default function PnLPage() {
                         {p.unitsSold}
                       </td>
                       <td className="py-3.5 px-4 text-right font-mono text-white">
-                        ${p.revenue?.toFixed(2)}
+                        {format(p.revenue)}
                       </td>
                       <td className="py-3.5 px-4 text-right font-mono text-slate-400">
-                        ${p.cogs?.toFixed(2)}
+                        {format(p.cogs)}
                       </td>
                       <td
                         className={`py-3.5 px-4 text-right font-mono font-bold ${
                           p.grossProfit >= 0 ? 'text-emerald-400' : 'text-red-400'
                         }`}
                       >
-                        ${p.grossProfit?.toFixed(2)}
+                        {format(p.grossProfit)}
                       </td>
                       <td className="py-3.5 px-4 text-right font-mono font-semibold text-slate-300">
                         {p.grossMargin}%
@@ -362,16 +364,16 @@ export default function PnLPage() {
                         {ch.orderCount}
                       </td>
                       <td className="py-3.5 px-4 text-right font-mono text-white">
-                        ${ch.revenue?.toFixed(2)}
+                        {format(ch.revenue)}
                       </td>
                       <td className="py-3.5 px-4 text-right font-mono text-slate-400">
-                        ${ch.cogs?.toFixed(2)}
+                        {format(ch.cogs)}
                       </td>
                       <td className="py-3.5 px-4 text-right font-mono text-amber-400">
-                        ${ch.fees?.toFixed(2)}
+                        {format(ch.fees)}
                       </td>
                       <td className="py-3.5 px-4 text-right font-mono font-bold text-blue-400 text-sm">
-                        ${ch.netContribution?.toFixed(2)}
+                        {format(ch.netContribution)}
                       </td>
                     </tr>
                   ))

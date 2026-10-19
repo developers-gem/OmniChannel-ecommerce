@@ -30,6 +30,8 @@ import {
   AlertCircle,
 } from 'lucide-react';
 
+import { useCurrency } from '@/lib/currency';
+
 interface ChannelDetail {
   connectionId: string;
   name: string;
@@ -74,6 +76,7 @@ interface InventoryRecord {
 
 export default function InventoryPage() {
   const queryClient = useQueryClient();
+  const { format, symbol } = useCurrency();
 
   // Navigation tab: Stock Levels vs Audit Ledger
   const [activeTab, setActiveTab] = useState<'levels' | 'movements'>('levels');
@@ -543,11 +546,11 @@ export default function InventoryPage() {
                           {/* 4. PRICE (Retail & Cost) */}
                           <td className="py-3.5 px-3.5 text-right font-mono">
                             <div className="font-bold text-white text-xs">
-                              ${Number(item.retailPrice).toFixed(2)}
+                              {format(item.retailPrice)}
                             </div>
                             {item.costPrice > 0 && (
                               <div className="text-[10px] text-slate-500">
-                                Cost: ${Number(item.costPrice).toFixed(2)}
+                                Cost: {format(item.costPrice)}
                               </div>
                             )}
                           </td>
@@ -576,7 +579,7 @@ export default function InventoryPage() {
                           <td className="py-3.5 px-3.5 text-center font-mono">
                             {item.shippingCharge > 0 ? (
                               <span className="text-xs font-semibold text-slate-200">
-                                ${Number(item.shippingCharge).toFixed(2)}
+                                {format(item.shippingCharge)}
                               </span>
                             ) : (
                               <span className="text-[11px] font-semibold text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded-md border border-emerald-800/50">
@@ -799,7 +802,7 @@ export default function InventoryPage() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                    Retail Price ($) *
+                    Retail Price ({symbol}) *
                   </label>
                   <input
                     type="number"
@@ -815,7 +818,7 @@ export default function InventoryPage() {
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                    Cost Price ($)
+                    Cost Price ({symbol})
                   </label>
                   <input
                     type="number"
@@ -834,7 +837,7 @@ export default function InventoryPage() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                    Shipping Charges ($)
+                    Shipping Charges ({symbol})
                   </label>
                   <input
                     type="number"
@@ -947,12 +950,12 @@ export default function InventoryPage() {
               </div>
               <div>
                 <span className="text-[10px] text-slate-400 uppercase block">Master Retail Price</span>
-                <span className="text-sm font-bold text-white">${Number(syncItem.retailPrice).toFixed(2)}</span>
+                <span className="text-sm font-bold text-white">{format(syncItem.retailPrice)}</span>
               </div>
               <div>
                 <span className="text-[10px] text-slate-400 uppercase block">Shipping Charges</span>
                 <span className="text-sm font-bold text-slate-300">
-                  {syncItem.shippingCharge > 0 ? `$${Number(syncItem.shippingCharge).toFixed(2)}` : 'Free'}
+                  {syncItem.shippingCharge > 0 ? format(syncItem.shippingCharge) : 'Free'}
                 </span>
               </div>
             </div>
@@ -1031,7 +1034,7 @@ export default function InventoryPage() {
                             <span className="text-xs text-slate-400">Sync Price:</span>
                             <div className="relative w-28">
                               <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500 font-mono text-xs">
-                                $
+                                {symbol}
                               </span>
                               <input
                                 type="number"

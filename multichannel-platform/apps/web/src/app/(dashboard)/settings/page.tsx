@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useThemeStore, THEMES, ThemeId } from '@/lib/theme';
+import { useCurrency, SUPPORTED_CURRENCIES, getCurrencyInfo } from '@/lib/currency';
 import {
   Settings as SettingsIcon,
   Save,
@@ -14,6 +15,7 @@ import {
   Check,
   Layers,
   Sliders,
+  Coins,
 } from 'lucide-react';
 
 export default function SettingsPage() {
@@ -22,6 +24,7 @@ export default function SettingsPage() {
   const [themeMsg, setThemeMsg] = useState<string | null>(null);
 
   const { theme: currentTheme, setTheme } = useThemeStore();
+  const { currency: activeCurrency, setCurrency, format } = useCurrency();
 
   const { data: orgData, isLoading } = useQuery({
     queryKey: ['org-settings'],
@@ -45,9 +48,11 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (orgData) {
+      const cur = orgData.defaultCurrency || 'USD';
+      setCurrency(cur);
       setFormData({
         name: orgData.name || '',
-        defaultCurrency: orgData.defaultCurrency || 'USD',
+        defaultCurrency: cur,
         timezone: orgData.timezone || 'UTC',
         settings: {
           safetyStockDefault: orgData.settings?.safetyStockDefault ?? 2,
@@ -57,7 +62,7 @@ export default function SettingsPage() {
         },
       });
     }
-  }, [orgData]);
+  }, [orgData, setCurrency]);
 
   const updateMutation = useMutation({
     mutationFn: async () => {
@@ -66,6 +71,9 @@ export default function SettingsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['org-settings'] });
+      if (formData.defaultCurrency) {
+        setCurrency(formData.defaultCurrency);
+      }
       setSuccessMsg(true);
       setTimeout(() => setSuccessMsg(false), 3000);
     },
@@ -281,14 +289,23 @@ export default function SettingsPage() {
               </label>
               <select
                 value={formData.defaultCurrency}
-                onChange={(e) => setFormData({ ...formData, defaultCurrency: e.target.value })}
+                onChange={(e) => {
+                  const newCode = e.target.value;
+                  setFormData({ ...formData, defaultCurrency: newCode });
+                  setCurrency(newCode);
+                }}
                 className="mt-1 w-full px-4 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-white text-xs outline-none focus:ring-2 focus:ring-brand-500 cursor-pointer"
               >
-                <option value="USD">USD ($)</option>
-                <option value="EUR">EUR (€)</option>
-                <option value="GBP">GBP (£)</option>
-                <option value="CAD">CAD ($)</option>
+                {SUPPORTED_CURRENCIES.map((c) => (
+                  <option key={c.code} value={c.code}>
+                    {c.flag} {c.code} ({c.symbol}) — {c.name}
+                  </option>
+                ))}
               </select>
+              <span className="text-[11px] text-slate-400 mt-1 block">
+                Preview: <strong className="text-emerald-400">{format(129.99)}</strong> •{' '}
+                <strong className="text-white">{format(2450)}</strong>
+              </span>
             </div>
 
             <div>

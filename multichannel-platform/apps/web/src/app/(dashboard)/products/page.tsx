@@ -27,8 +27,10 @@ import {
   ChevronLeft,
   ChevronRight,
 } from 'lucide-react';
+import { useCurrency } from '@/lib/currency';
 
 export default function ProductsPage() {
+  const { format } = useCurrency();
   const queryClient = useQueryClient();
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
@@ -452,7 +454,7 @@ export default function ProductsPage() {
                         </div>
                       </td>
                       <td className="py-3.5 px-4 text-right font-semibold text-white">
-                        ${p.defaultRetailPrice?.toFixed(2)}
+                        {format(p.defaultRetailPrice)}
                       </td>
                       <td className="py-3.5 px-4 text-center">
                         <span
@@ -768,7 +770,7 @@ export default function ProductsPage() {
               <div className="flex flex-wrap items-center gap-3 mt-1.5 text-xs text-slate-300 font-mono">
                 <span>SKU: <strong className="text-white">{pushModalProduct.masterSku}</strong></span>
                 <span>&bull;</span>
-                <span>Retail: <strong className="text-emerald-400">${pushModalProduct.defaultRetailPrice?.toFixed(2)}</strong></span>
+                <span>Retail: <strong className="text-emerald-400">{format(pushModalProduct.defaultRetailPrice)}</strong></span>
                 <span>&bull;</span>
                 <span>Stock: <strong className="text-white">{pushModalProduct.totalStock ?? 0} units</strong></span>
               </div>

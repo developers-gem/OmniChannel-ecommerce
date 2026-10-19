@@ -5,6 +5,7 @@ import './globals.css';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useAuthStore } from '@/lib/store';
 import { useThemeStore } from '@/lib/theme';
+import { useCurrencyStore } from '@/lib/currency';
 
 export default function RootLayout({
   children,
@@ -26,11 +27,13 @@ export default function RootLayout({
 
   const initializeAuth = useAuthStore((s) => s.initialize);
   const initializeTheme = useThemeStore((s) => s.initializeTheme);
+  const initializeCurrency = useCurrencyStore((s) => s.initializeCurrency);
 
   useEffect(() => {
     initializeAuth();
     initializeTheme();
-  }, [initializeAuth, initializeTheme]);
+    initializeCurrency();
+  }, [initializeAuth, initializeTheme, initializeCurrency]);
 
   return (
     <html lang="en" className="dark" data-theme="emerald" suppressHydrationWarning>

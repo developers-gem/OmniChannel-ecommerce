@@ -26,8 +26,10 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts';
+import { useCurrency } from '@/lib/currency';
 
 export default function DashboardPage() {
+  const { format, symbol } = useCurrency();
   const { data: metricsData, isLoading: metricsLoading } = useQuery({
     queryKey: ['dashboard-metrics'],
     queryFn: async () => {
@@ -89,7 +91,7 @@ export default function DashboardPage() {
             </div>
           </div>
           <div className="text-2xl font-extrabold text-white">
-            ${sales.revenue30d?.toLocaleString('en-US', { minimumFractionDigits: 2 }) || '0.00'}
+            {format(sales.revenue30d)}
           </div>
           <div className="mt-2 flex items-center gap-2 text-xs text-slate-400">
             <span className="text-emerald-400 font-semibold">{sales.orders30d} orders</span>
@@ -107,7 +109,7 @@ export default function DashboardPage() {
           </div>
           <div className="text-2xl font-extrabold text-white">{sales.orders24h}</div>
           <div className="mt-2 flex items-center gap-2 text-xs text-slate-400">
-            <span className="text-blue-400 font-semibold">${sales.revenue24h?.toFixed(2)}</span>
+            <span className="text-blue-400 font-semibold">{format(sales.revenue24h)}</span>
             <span>gross sales today</span>
           </div>
         </div>
@@ -204,7 +206,7 @@ export default function DashboardPage() {
                   strokeWidth={2}
                   fillOpacity={1}
                   fill="url(#colorRevenue)"
-                  name="Revenue ($)"
+                  name={`Revenue (${symbol})`}
                 />
                 <Area
                   type="monotone"
@@ -213,7 +215,7 @@ export default function DashboardPage() {
                   strokeWidth={2}
                   fillOpacity={1}
                   fill="url(#colorProfit)"
-                  name="Gross Profit ($)"
+                  name={`Gross Profit (${symbol})`}
                 />
               </AreaChart>
             </ResponsiveContainer>
@@ -292,7 +294,7 @@ export default function DashboardPage() {
                       </span>
                     </td>
                     <td className="py-3 px-4 text-right font-semibold text-white">
-                      ${o.totalPrice?.toFixed(2)}
+                      {format(o.totalPrice)}
                     </td>
                   </tr>
                 ))

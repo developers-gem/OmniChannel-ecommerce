@@ -14,8 +14,10 @@ import {
   Clock,
   Package,
 } from 'lucide-react';
+import { useCurrency } from '@/lib/currency';
 
 export default function OrdersPage() {
+  const { format } = useCurrency();
   const queryClient = useQueryClient();
   const [search, setSearch] = useState('');
   const [channelFilter, setChannelFilter] = useState('');
@@ -206,7 +208,7 @@ export default function OrdersPage() {
                       </span>
                     </td>
                     <td className="py-3.5 px-4 text-right font-bold text-white">
-                      ${o.totalPrice?.toFixed(2)}
+                      {format(o.totalPrice)}
                     </td>
                     <td className="py-3.5 px-4 text-right">
                       <div className="flex items-center justify-end gap-1.5">
@@ -279,9 +281,9 @@ export default function OrdersPage() {
                       </span>
                     </div>
                     <div className="text-right">
-                      <div className="font-bold text-white">${(line.unitPrice * line.quantity).toFixed(2)}</div>
+                      <div className="font-bold text-white">{format(line.unitPrice * line.quantity)}</div>
                       <span className="text-[10px] text-slate-500">
-                        Historical Cost: ${line.unitCost?.toFixed(2)} / unit
+                        Historical Cost: {format(line.unitCost)} / unit
                       </span>
                     </div>
                   </div>
@@ -293,15 +295,15 @@ export default function OrdersPage() {
             <div className="mt-4 p-3.5 bg-slate-800/40 rounded-xl border border-slate-800 space-y-1.5 text-xs">
               <div className="flex justify-between text-slate-400">
                 <span>Subtotal</span>
-                <span>${selectedOrder.subtotalPrice?.toFixed(2)}</span>
+                <span>{format(selectedOrder.subtotalPrice)}</span>
               </div>
               <div className="flex justify-between text-slate-400">
                 <span>Channel Marketplace Fee</span>
-                <span>-${selectedOrder.channelFee?.toFixed(2)}</span>
+                <span>-{format(selectedOrder.channelFee)}</span>
               </div>
               <div className="flex justify-between font-bold text-white pt-2 border-t border-slate-700">
                 <span>Total Paid</span>
-                <span>${selectedOrder.totalPrice?.toFixed(2)}</span>
+                <span>{format(selectedOrder.totalPrice)}</span>
               </div>
             </div>
 
