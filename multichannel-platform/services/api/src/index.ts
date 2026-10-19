@@ -101,8 +101,8 @@ let server: any;
 
 export async function startServer() {
   await connectDatabase();
-  server = app.listen(config.port, () => {
-    logger.info(`Multichannel API running on http://localhost:${config.port}`);
+  server = app.listen(config.port, '0.0.0.0', () => {
+    logger.info(`Multichannel API running on http://0.0.0.0:${config.port}`);
   });
   return server;
 }
