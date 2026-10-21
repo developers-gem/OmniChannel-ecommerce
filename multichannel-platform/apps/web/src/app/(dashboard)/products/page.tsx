@@ -40,6 +40,10 @@ export default function ProductsPage() {
   const [isImporting, setIsImporting] = useState(false);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
+  // Export CSV Modal states
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+
   // Import from Channels Modal states
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [importingChannelId, setImportingChannelId] = useState<string | null>(null);
@@ -270,8 +274,41 @@ export default function ProductsPage() {
     }
   };
 
-  const handleExportCsv = () => {
-    window.open('http://localhost:5050/api/v1/csv/export', '_blank');
+  const handleExportCsv = async () => {
+    setIsExporting(true);
+    try {
+      const res: any = await api.get('/csv/export', {
+        responseType: 'blob',
+      });
+
+      const blob = res instanceof Blob
+        ? res
+        : new Blob([res], { type: 'text/csv;charset=utf-8;' });
+
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = `canonical-products-export-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(downloadUrl);
+
+      setIsExportModalOpen(false);
+      setNotification({
+        type: 'success',
+        text: 'Products catalog exported to CSV successfully!',
+      });
+      setTimeout(() => setNotification(null), 6000);
+    } catch (err: any) {
+      setNotification({
+        type: 'error',
+        text: err?.message || 'Failed to export products to CSV',
+      });
+      setTimeout(() => setNotification(null), 6000);
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   return (
@@ -304,8 +341,10 @@ export default function ProductsPage() {
           </button>
 
           <button
-            onClick={handleExportCsv}
-            className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold px-3.5 py-2.5 rounded-xl border border-slate-700 transition cursor-pointer"
+            type="button"
+            onClick={() => setIsExportModalOpen(true)}
+            className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-semibold px-3.5 py-2.5 rounded-xl border border-slate-700 transition cursor-pointer"
+            title="Export master products and inventory to CSV"
           >
             <Download className="w-3.5 h-3.5" />
             <span>Export CSV</span>
@@ -938,6 +977,80 @@ export default function ProductsPage() {
                   <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                 ) : null}
                 <span>Yes, Push Again</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 5: Export CSV Confirmation Modal */}
+      {isExportModalOpen && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl relative">
+            <div className="flex items-start justify-between gap-4 mb-4">
+              <div className="w-12 h-12 rounded-2xl bg-brand-500/10 border border-brand-500/20 flex items-center justify-center text-brand-400">
+                <Download className="w-6 h-6" />
+              </div>
+              <button
+                type="button"
+                onClick={() => !isExporting && setIsExportModalOpen(false)}
+                className="text-slate-500 hover:text-white text-lg font-bold p-1 rounded-lg transition"
+                disabled={isExporting}
+              >
+                &times;
+              </button>
+            </div>
+
+            <h3 className="text-base font-bold text-white mb-2">
+              Export Products Catalog
+            </h3>
+            <p className="text-xs text-slate-300 leading-relaxed mb-4">
+              Do you want to export your master product catalog? This will generate and download a comprehensive CSV spreadsheet with all product details, SKUs, prices, barcodes, and live inventory levels.
+            </p>
+
+            <div className="bg-slate-800/60 border border-slate-700/60 rounded-xl p-3.5 text-xs mb-5 space-y-2">
+              <div className="flex items-center justify-between text-slate-400">
+                <span>File Format:</span>
+                <span className="text-white font-mono font-semibold">CSV (.csv spreadsheet)</span>
+              </div>
+              {pagination?.total !== undefined && (
+                <div className="flex items-center justify-between text-slate-400">
+                  <span>Total Master Products:</span>
+                  <span className="text-brand-400 font-mono font-bold">{pagination.total}</span>
+                </div>
+              )}
+              <div className="flex items-center justify-between text-slate-400">
+                <span>Included Fields:</span>
+                <span className="text-slate-300">SKU, Title, Brand, Cost, Retail, Stock</span>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setIsExportModalOpen(false)}
+                disabled={isExporting}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-400 hover:text-white transition cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleExportCsv}
+                disabled={isExporting}
+                className="bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold px-4 py-2.5 rounded-xl shadow-lg shadow-brand-600/30 transition disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+              >
+                {isExporting ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Exporting...</span>
+                  </>
+                ) : (
+                  <>
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Export CSV</span>
+                  </>
+                )}
               </button>
             </div>
           </div>

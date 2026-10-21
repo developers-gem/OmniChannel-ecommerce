@@ -519,7 +519,7 @@ export class CsvController {
 
       const rows = variants.map((v: any) => {
         const inv = inventoryItems.find(
-          (i) => i.canonicalVariantId.toString() === v._id.toString()
+          (i) => i.canonicalVariantId?.toString() === v._id?.toString()
         );
         return {
           SKU: sanitizeForCsv(v.sku),
