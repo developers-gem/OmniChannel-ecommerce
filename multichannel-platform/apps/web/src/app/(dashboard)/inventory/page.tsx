@@ -28,6 +28,8 @@ import {
   Layers,
   HelpCircle,
   AlertCircle,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 
 import { useCurrency } from '@/lib/currency';
@@ -86,6 +88,10 @@ export default function InventoryPage() {
   const [healthFilter, setHealthFilter] = useState<'ALL' | 'IN_STOCK' | 'LOW_STOCK' | 'OUT_OF_STOCK'>('ALL');
   const [syncFilter, setSyncFilter] = useState<'ALL' | 'DATA_CHANGED' | 'IN_SYNC'>('ALL');
 
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+
   // Adjust / Edit modal state
   const [adjustItem, setAdjustItem] = useState<InventoryRecord | null>(null);
   const [adjustForm, setAdjustForm] = useState<{
@@ -125,7 +131,7 @@ export default function InventoryPage() {
   const { data: inventoryData, isLoading: inventoryLoading } = useQuery({
     queryKey: ['inventory-items'],
     queryFn: async () => {
-      const res: any = await api.get('/inventory?limit=100');
+      const res: any = await api.get('/inventory?limit=250');
       return res.data || [];
     },
   });
@@ -198,6 +204,15 @@ export default function InventoryPage() {
       return true;
     });
   }, [inventoryData, searchQuery, healthFilter, syncFilter]);
+
+  // Pagination calculations
+  const totalPages = Math.max(1, Math.ceil(filteredItems.length / pageSize));
+  const safePage = Math.min(Math.max(currentPage, 1), totalPages);
+
+  const paginatedItems: InventoryRecord[] = useMemo(() => {
+    const startIndex = (safePage - 1) * pageSize;
+    return filteredItems.slice(startIndex, startIndex + pageSize);
+  }, [filteredItems, safePage, pageSize]);
 
   // Metric counts
   const metrics = useMemo(() => {
@@ -425,7 +440,10 @@ export default function InventoryPage() {
               <input
                 type="text"
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  setCurrentPage(1);
+                }}
                 placeholder="Search inventory by SKU, product title, or variant..."
                 className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-white placeholder-slate-500 focus:border-brand-500 focus:outline-none"
               />
@@ -438,7 +456,10 @@ export default function InventoryPage() {
                 {(['ALL', 'IN_STOCK', 'LOW_STOCK', 'OUT_OF_STOCK'] as const).map((filter) => (
                   <button
                     key={filter}
-                    onClick={() => setHealthFilter(filter)}
+                    onClick={() => {
+                      setHealthFilter(filter);
+                      setCurrentPage(1);
+                    }}
                     className={`px-2.5 py-1 rounded-lg font-semibold transition cursor-pointer text-[11px] ${
                       healthFilter === filter
                         ? 'bg-slate-800 text-white shadow-sm'
@@ -459,7 +480,10 @@ export default function InventoryPage() {
               {/* Sync Status Filter */}
               <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs">
                 <button
-                  onClick={() => setSyncFilter(syncFilter === 'DATA_CHANGED' ? 'ALL' : 'DATA_CHANGED')}
+                  onClick={() => {
+                    setSyncFilter(syncFilter === 'DATA_CHANGED' ? 'ALL' : 'DATA_CHANGED');
+                    setCurrentPage(1);
+                  }}
                   className={`px-3 py-1 rounded-lg font-semibold transition cursor-pointer text-[11px] flex items-center gap-1.5 ${
                     syncFilter === 'DATA_CHANGED'
                       ? 'bg-amber-950/80 text-amber-300 border border-amber-800/80'
@@ -502,7 +526,7 @@ export default function InventoryPage() {
                       </td>
                     </tr>
                   ) : filteredItems.length > 0 ? (
-                    filteredItems.map((item) => {
+                    paginatedItems.map((item) => {
                       return (
                         <tr
                           key={item._id}
@@ -666,6 +690,94 @@ export default function InventoryPage() {
                 </tbody>
               </table>
             </div>
+
+            {/* Pagination Bar */}
+            {filteredItems.length > 0 && (
+              <div className="p-4 border-t border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3 bg-slate-900/60 text-xs">
+                <div className="flex items-center gap-3 text-slate-400">
+                  <span>
+                    Showing{' '}
+                    <strong className="text-white">
+                      {(safePage - 1) * pageSize + 1}
+                    </strong>{' '}
+                    to{' '}
+                    <strong className="text-white">
+                      {Math.min(safePage * pageSize, filteredItems.length)}
+                    </strong>{' '}
+                    of <strong className="text-white">{filteredItems.length}</strong> products
+                  </span>
+                  <div className="flex items-center gap-1.5 pl-3 border-l border-slate-800">
+                    <span className="text-[11px] text-slate-500">Per page:</span>
+                    <select
+                      value={pageSize}
+                      onChange={(e) => {
+                        setPageSize(Number(e.target.value));
+                        setCurrentPage(1);
+                      }}
+                      className="bg-slate-800 border border-slate-700 text-slate-300 rounded-lg px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand-500 cursor-pointer"
+                    >
+                      <option value={15}>15</option>
+                      <option value={25}>25</option>
+                      <option value={50}>50</option>
+                      <option value={100}>100</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
+                    disabled={safePage <= 1}
+                    className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-700/80 bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                    <span>Prev</span>
+                  </button>
+
+                  <div className="flex items-center gap-1">
+                    {Array.from({ length: totalPages }, (_, i) => i + 1)
+                      .filter((pNum) => {
+                        if (totalPages <= 7) return true;
+                        if (pNum === 1 || pNum === totalPages) return true;
+                        return Math.abs(pNum - safePage) <= 1;
+                      })
+                      .map((pNum, idx, arr) => {
+                        const prevNum = arr[idx - 1];
+                        const showEllipsis = prevNum && pNum - prevNum > 1;
+                        return (
+                          <React.Fragment key={pNum}>
+                            {showEllipsis && (
+                              <span className="px-1 text-slate-500 text-xs">...</span>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setCurrentPage(pNum)}
+                              className={`min-w-8 h-8 px-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                                safePage === pNum
+                                  ? 'bg-brand-600 text-white shadow-md shadow-brand-600/30'
+                                  : 'bg-slate-800/60 hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-700/60'
+                              }`}
+                            >
+                              {pNum}
+                            </button>
+                          </React.Fragment>
+                        );
+                      })}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage((prev) => Math.min(prev + 1, totalPages))}
+                    disabled={safePage >= totalPages}
+                    className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-700/80 bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                  >
+                    <span>Next</span>
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
