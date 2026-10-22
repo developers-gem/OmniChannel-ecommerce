@@ -11,6 +11,8 @@ router.use(requireAuth);
 router.use(enforceTenantIsolation);
 
 router.get('/', ProductsController.list);
+router.get('/zero-mapped', ProductsController.listZeroMapped);
+router.post('/bulk-publish', ProductsController.bulkPublish);
 router.get('/:id', ProductsController.getById);
 router.post('/', validate(CreateProductSchema), ProductsController.create);
 router.put('/:id', ProductsController.update);

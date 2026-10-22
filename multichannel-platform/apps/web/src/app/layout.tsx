@@ -33,6 +33,18 @@ export default function RootLayout({
     initializeAuth();
     initializeTheme();
     initializeCurrency();
+
+    const handleUserActivity = () => {
+      initializeAuth();
+    };
+
+    window.addEventListener('visibilitychange', handleUserActivity);
+    window.addEventListener('focus', handleUserActivity);
+
+    return () => {
+      window.removeEventListener('visibilitychange', handleUserActivity);
+      window.removeEventListener('focus', handleUserActivity);
+    };
   }, [initializeAuth, initializeTheme, initializeCurrency]);
 
   return (

@@ -19,6 +19,7 @@ import {
   Settings,
   ChevronRight,
   Layers,
+  Unlink,
 } from 'lucide-react';
 
 const navigation = [
@@ -27,6 +28,7 @@ const navigation = [
   { name: 'All Products', href: '/products', icon: Package },
   { name: 'Add Product', href: '/products/new', icon: PlusCircle },
   { name: 'Product Mapping', href: '/mappings', icon: GitMerge },
+  { name: 'Unmapped Products', href: '/unmapped-products', icon: Unlink },
   { name: 'Inventory', href: '/inventory', icon: Boxes },
   { name: 'Orders', href: '/orders', icon: ShoppingCart },
   { name: 'CSV Import / Export', href: '/csv', icon: FileSpreadsheet },

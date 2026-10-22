@@ -251,4 +251,28 @@ export class ShopifyService {
 
     return createdProduct;
   }
+
+  /**
+   * Delete a product from Shopify store
+   */
+  static async deleteProduct(domain: string, token: string, shopifyProductId: string): Promise<boolean> {
+    try {
+      const client = this.getClient(domain, token);
+      const cleanId = String(shopifyProductId).replace(/\D/g, '');
+      if (!cleanId) return false;
+
+      await client.delete(`/products/${cleanId}.json`);
+      logger.info(`Successfully deleted product ${cleanId} from Shopify store ${domain}`);
+      return true;
+    } catch (error: any) {
+      if (error.response?.status === 404) {
+        logger.info(`Product ${shopifyProductId} was already deleted or not found on Shopify store ${domain}`);
+        return true;
+      }
+      logger.error(
+        `Failed to delete Shopify product ${shopifyProductId} on ${domain}: ${error.response?.data?.errors || error.message}`
+      );
+      return false;
+    }
+  }
 }

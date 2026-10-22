@@ -12,7 +12,7 @@ export const config = {
   jwt: {
     secret: process.env.JWT_SECRET || 'super_secure_jwt_secret_change_in_production_32chars!',
     refreshSecret: process.env.JWT_REFRESH_SECRET || 'super_secure_refresh_token_secret_change_in_production!',
-    accessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN || '15m',
+    accessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN || '7d',
     refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
   },
   encryptionKey: process.env.ENCRYPTION_KEY || '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
@@ -23,8 +23,25 @@ export const config = {
     useEmbeddedFallback: process.env.REDIS_USE_EMBEDDED_FALLBACK !== 'false',
   },
   corsOrigin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+  apiBaseUrl: process.env.API_BASE_URL || 'http://localhost:5050',
+  webBaseUrl: process.env.WEB_BASE_URL || process.env.CORS_ORIGIN || 'http://localhost:3000',
   rateLimits: {
     windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000', 10),
     max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '1000', 10),
+  },
+  ebay: {
+    clientId: process.env.EBAY_CLIENT_ID || '',
+    clientSecret: process.env.EBAY_CLIENT_SECRET || '',
+    ruName: process.env.EBAY_RUNAME || '',
+    environment: (process.env.EBAY_ENVIRONMENT || 'SANDBOX').toUpperCase(),
+    scopes: [
+      'https://api.ebay.com/oauth/api_scope',
+      'https://api.ebay.com/oauth/api_scope/sell.inventory',
+      'https://api.ebay.com/oauth/api_scope/sell.inventory.readonly',
+      'https://api.ebay.com/oauth/api_scope/sell.account',
+      'https://api.ebay.com/oauth/api_scope/sell.account.readonly',
+      'https://api.ebay.com/oauth/api_scope/sell.fulfillment',
+      'https://api.ebay.com/oauth/api_scope/sell.fulfillment.readonly',
+    ].join(' '),
   },
 };

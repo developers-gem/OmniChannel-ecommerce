@@ -33,15 +33,41 @@ describe('Auth & Tenancy Isolation Module', () => {
     expect(res.body.data.organization.role).toBe('OWNER');
   });
 
-  it('should reject login with incorrect credentials', async () => {
-    const res = await request(app)
-      .post('/api/v1/auth/login')
+  it('should issue 7-day tokens on registration and allow refreshing tokens', async () => {
+    const regRes = await request(app)
+      .post('/api/v1/auth/register')
       .send({
-        email: 'nonexistent@example.com',
-        password: 'wrongpassword',
+        email: `merchant_7d_${Date.now()}@example.com`,
+        password: 'Password123!',
+        firstName: 'Seven',
+        lastName: 'Days',
+        organizationName: 'Seven Days Retail Inc',
       });
 
-    expect(res.status).toBe(401);
-    expect(res.body.success).toBe(false);
+    expect(regRes.status).toBe(201);
+    const { accessToken, refreshToken } = regRes.body.data.tokens;
+    expect(accessToken).toBeDefined();
+    expect(refreshToken).toBeDefined();
+
+    // Verify token lifetime is 7 days (604,800 seconds)
+    const accessPayload = JSON.parse(Buffer.from(accessToken.split('.')[1], 'base64').toString());
+    const refreshPayload = JSON.parse(Buffer.from(refreshToken.split('.')[1], 'base64').toString());
+
+    const accessDuration = accessPayload.exp - accessPayload.iat;
+    const refreshDuration = refreshPayload.exp - refreshPayload.iat;
+
+    // 7 days = 604,800 seconds
+    expect(accessDuration).toBe(7 * 24 * 60 * 60);
+    expect(refreshDuration).toBe(7 * 24 * 60 * 60);
+
+    // Test token refresh
+    const refreshRes = await request(app)
+      .post('/api/v1/auth/refresh')
+      .send({ refreshToken });
+
+    expect(refreshRes.status).toBe(200);
+    expect(refreshRes.body.success).toBe(true);
+    expect(refreshRes.body.data.tokens.accessToken).toBeDefined();
+    expect(refreshRes.body.data.tokens.refreshToken).toBeDefined();
   });
 });

@@ -56,6 +56,7 @@ export enum MappingConfidence {
 
 export enum MappingStatus {
   MAPPED = 'MAPPED',
+  UNMAPPED = 'UNMAPPED',
   IGNORED = 'IGNORED',
   CONFLICT = 'CONFLICT',
 }

@@ -24,7 +24,12 @@ export default function LoginPage() {
     try {
       const res: any = await api.post('/auth/login', { email, password });
       if (res.success && res.data) {
-        setAuth(res.data.user, res.data.organization, res.data.tokens.accessToken);
+        setAuth(
+          res.data.user,
+          res.data.organization,
+          res.data.tokens.accessToken,
+          res.data.tokens.refreshToken
+        );
         router.push('/dashboard');
       }
     } catch (err: any) {

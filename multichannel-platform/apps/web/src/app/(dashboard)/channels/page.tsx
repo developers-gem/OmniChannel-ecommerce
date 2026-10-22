@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import {
@@ -19,6 +19,8 @@ import {
   Layers,
   DollarSign,
   Boxes,
+  Zap,
+  Key,
 } from 'lucide-react';
 import { ChannelType, ChannelStatus } from '@multichannel/shared';
 
@@ -29,10 +31,58 @@ export default function ChannelsPage() {
   const [storeName, setStoreName] = useState('');
   const [storeDomain, setStoreDomain] = useState('');
   const [accessToken, setAccessToken] = useState('');
+  const [refreshToken, setRefreshToken] = useState('');
+  const [authCode, setAuthCode] = useState('');
+  const [ebayAuthMode, setEbayAuthMode] = useState<'oauth' | 'manual'>('oauth');
+  const [isOAuthRedirecting, setIsOAuthRedirecting] = useState(false);
+  const [pastedCodeOrUrl, setPastedCodeOrUrl] = useState('');
+  const [isVerifyingEbayCode, setIsVerifyingEbayCode] = useState(false);
+  const [oauthWindowOpened, setOauthWindowOpened] = useState(false);
   const [testResults, setTestResults] = useState<Record<string, any>>({});
   const [modalError, setModalError] = useState<string | null>(null);
   const [activeActionId, setActiveActionId] = useState<string | null>(null);
   const [bannerMessage, setBannerMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  useEffect(() => {
+    // Listen for postMessage from popup window (when eBay redirects to public callback)
+    const handleAuthMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'EBAY_AUTH_SUCCESS') {
+        queryClient.invalidateQueries({ queryKey: ['channel-connections'] });
+        setIsModalOpen(false);
+        setOauthWindowOpened(false);
+        setPastedCodeOrUrl('');
+        setBannerMessage({
+          type: 'success',
+          text: 'eBay store connected successfully via OAuth! Long-lived refresh token saved — tokens will auto-renew seamlessly.',
+        });
+      } else if (event.data?.type === 'EBAY_AUTH_ERROR') {
+        setModalError(`eBay Authorization Error: ${event.data.error || 'Failed'}`);
+        setIsOAuthRedirecting(false);
+        setIsVerifyingEbayCode(false);
+      }
+    };
+    window.addEventListener('message', handleAuthMessage);
+
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('ebay_connected') === 'true') {
+        setBannerMessage({
+          type: 'success',
+          text: 'eBay store connected successfully via OAuth! Long-lived refresh token saved — tokens will auto-renew seamlessly.',
+        });
+        queryClient.invalidateQueries({ queryKey: ['channel-connections'] });
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } else if (params.get('ebay_error')) {
+        setBannerMessage({
+          type: 'error',
+          text: `eBay Authorization Error: ${decodeURIComponent(params.get('ebay_error') || '')}`,
+        });
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+    }
+
+    return () => window.removeEventListener('message', handleAuthMessage);
+  }, [queryClient]);
 
   const { data: channels, isLoading } = useQuery({
     queryKey: ['channel-connections'],
@@ -53,6 +103,8 @@ export default function ChannelsPage() {
       setStoreName('');
       setStoreDomain('');
       setAccessToken('');
+      setRefreshToken('');
+      setAuthCode('');
       setModalError(null);
     },
     onError: (err: any) => {
@@ -202,6 +254,80 @@ export default function ChannelsPage() {
     }
   };
 
+  const handleEbayOAuthConnect = async () => {
+    try {
+      setIsOAuthRedirecting(true);
+      setModalError(null);
+      const targetName = storeName.trim() || 'eBay Sandbox Store';
+      const isSandbox = !storeDomain || storeDomain.includes('sandbox');
+      const env = isSandbox ? 'SANDBOX' : 'PRODUCTION';
+
+      const res: any = await api.get(
+        `/channels/ebay/auth-url?name=${encodeURIComponent(targetName)}&environment=${env}`
+      );
+      if (res?.data?.url) {
+        // Open eBay OAuth in popup / new tab so user never loses their active platform state
+        const popup = window.open(
+          res.data.url,
+          'ebay_oauth_popup',
+          'width=720,height=820,menubar=no,status=no,toolbar=no'
+        );
+        if (!popup || popup.closed || typeof popup.closed === 'undefined') {
+          window.open(res.data.url, '_blank');
+        }
+        setOauthWindowOpened(true);
+        setIsOAuthRedirecting(false);
+      } else {
+        throw new Error('Failed to obtain eBay authorization URL');
+      }
+    } catch (err: any) {
+      setIsOAuthRedirecting(false);
+      setModalError(err.message || 'Failed to start eBay OAuth connection');
+    }
+  };
+
+  const handleCompleteEbayOAuth = async (inputCodeOrUrl?: string) => {
+    const rawInput = (inputCodeOrUrl || pastedCodeOrUrl || authCode).trim();
+    if (!rawInput) {
+      setModalError('Please paste the eBay completion URL or authorization code from your browser address bar.');
+      return;
+    }
+
+    try {
+      setIsVerifyingEbayCode(true);
+      setModalError(null);
+      const targetName = storeName.trim() || 'eBay Sandbox Store';
+      const isSandbox = !storeDomain || storeDomain.includes('sandbox');
+      const env = isSandbox ? 'SANDBOX' : 'PRODUCTION';
+
+      const res: any = await api.post('/channels/ebay/exchange-code', {
+        code: rawInput,
+        name: targetName,
+        environment: env,
+      });
+
+      if (res?.success) {
+        queryClient.invalidateQueries({ queryKey: ['channel-connections'] });
+        setIsModalOpen(false);
+        setStoreName('');
+        setStoreDomain('');
+        setPastedCodeOrUrl('');
+        setAuthCode('');
+        setOauthWindowOpened(false);
+        setBannerMessage({
+          type: 'success',
+          text: `eBay store '${targetName}' connected successfully via OAuth! Long-lived refresh token saved — tokens will auto-renew seamlessly.`,
+        });
+      } else {
+        throw new Error(res?.error?.message || 'Failed to verify eBay authorization code');
+      }
+    } catch (err: any) {
+      setModalError(err.message || 'Failed to exchange eBay authorization code');
+    } finally {
+      setIsVerifyingEbayCode(false);
+    }
+  };
+
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
     setModalError(null);
@@ -209,17 +335,35 @@ export default function ChannelsPage() {
     if (selectedType === ChannelType.EBAY && (!domain || domain.length === 0)) {
       domain = 'api.sandbox.ebay.com';
     }
-    connectMutation.mutate({
+
+    const payload: any = {
       channelType: selectedType,
-      name: storeName.trim(),
+      name: storeName.trim() || (selectedType === ChannelType.EBAY ? 'eBay Sandbox Store' : 'New Store'),
       config: {
         storeDomain: domain,
         baseUrl: domain,
+        environment: domain.includes('sandbox') ? 'SANDBOX' : 'PRODUCTION',
       },
-      credentials: {
-        accessToken: accessToken.trim(),
-      },
-    });
+      credentials: {},
+    };
+
+    if (selectedType === ChannelType.EBAY) {
+      if (pastedCodeOrUrl.trim()) {
+        payload.credentials.code = pastedCodeOrUrl.trim();
+      } else if (authCode.trim()) {
+        payload.credentials.code = authCode.trim();
+      }
+      if (refreshToken.trim()) {
+        payload.credentials.refreshToken = refreshToken.trim();
+      }
+      if (accessToken.trim()) {
+        payload.credentials.accessToken = accessToken.trim();
+      }
+    } else {
+      payload.credentials.accessToken = accessToken.trim();
+    }
+
+    connectMutation.mutate(payload);
   };
 
   return (
@@ -517,6 +661,7 @@ export default function ChannelsPage() {
                 />
               </div>
 
+              {/* Domain / Environment Input */}
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <label className="block text-xs font-semibold text-slate-300">
@@ -576,34 +721,198 @@ export default function ChannelsPage() {
                 </p>
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  {selectedType === ChannelType.EBAY
-                    ? 'eBay User OAuth Access Token'
-                    : selectedType === ChannelType.SHOPIFY
-                    ? 'Shopify Admin API Access Token'
-                    : 'Admin API Access Token / API Key'}
-                </label>
-                <input
-                  type="password"
-                  required
-                  placeholder={
-                    selectedType === ChannelType.EBAY
-                      ? 'v^1.1#i^1#p^3#r^1#f^0#I^3#t^Ul4xMF8... (OAuth Bearer Token)'
-                      : selectedType === ChannelType.SHOPIFY
-                      ? 'shpat_xxxxxxxxxxxxxxxxxxxxx'
-                      : 'API Key or Bearer Token'
-                  }
-                  value={accessToken}
-                  onChange={(e) => setAccessToken(e.target.value)}
-                  className="w-full px-3.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-white text-xs outline-none focus:border-brand-500 font-mono"
-                />
-                <p className="text-[10px] text-slate-500 mt-1">
-                  {selectedType === ChannelType.EBAY
-                    ? 'Live-validated against eBay REST Inventory API before saving. Encrypted with AES-256-GCM.'
-                    : 'Live-validated against Shopify Admin API before saving. Encrypted with AES-256-GCM.'}
-                </p>
-              </div>
+              {/* Channel-Specific Authentication Fields */}
+              {selectedType === ChannelType.EBAY ? (
+                <div className="space-y-4 pt-1">
+                  {/* Mode Selector Tabs */}
+                  <div className="flex rounded-xl bg-slate-800/80 p-1 border border-slate-700/80">
+                    <button
+                      type="button"
+                      onClick={() => setEbayAuthMode('oauth')}
+                      className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition ${
+                        ebayAuthMode === 'oauth'
+                          ? 'bg-brand-600 text-white shadow-md'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      <Zap className="w-3.5 h-3.5" />
+                      <span>1-Click OAuth Grant</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEbayAuthMode('manual')}
+                      className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition ${
+                        ebayAuthMode === 'manual'
+                          ? 'bg-brand-600 text-white shadow-md'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      <Key className="w-3.5 h-3.5" />
+                      <span>Refresh Token / Localhost</span>
+                    </button>
+                  </div>
+
+                  {ebayAuthMode === 'oauth' ? (
+                    <div className="p-4 rounded-xl bg-slate-800/50 border border-slate-700/80 space-y-3">
+                      <div className="flex items-start gap-3">
+                        <div className="p-2 rounded-lg bg-brand-500/10 border border-brand-500/20 text-brand-400 mt-0.5 shrink-0">
+                          <ShieldCheck className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <h4 className="text-xs font-bold text-white">OAuth 2.0 Authorization Flow</h4>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            Authenticate with eBay. Our platform exchanges the authorization code for an 18-month Refresh Token and auto-renews 2-hour access tokens in the background forever.
+                          </p>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleEbayOAuthConnect}
+                        disabled={isOAuthRedirecting}
+                        className="w-full mt-2 py-2.5 px-4 bg-brand-600 hover:bg-brand-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-brand-600/30 flex items-center justify-center gap-2 transition disabled:opacity-50"
+                      >
+                        {isOAuthRedirecting ? (
+                          <>
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                            <span>Opening eBay Consent Screen...</span>
+                          </>
+                        ) : (
+                          <>
+                            <ExternalLink className="w-4 h-4" />
+                            <span>
+                              {oauthWindowOpened
+                                ? 'Re-open eBay Consent Screen'
+                                : 'Sign in & Connect with eBay (Opens in New Tab)'}
+                            </span>
+                          </>
+                        )}
+                      </button>
+
+                      {/* Step 2: Finalize Connection Box */}
+                      <div className="mt-3 pt-3 border-t border-slate-700/60 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <label className="block text-xs font-semibold text-slate-200">
+                            Paste eBay Address Bar URL or Authorization Code:
+                          </label>
+                          <span className="text-[10px] text-emerald-400 font-medium">Final Step</span>
+                        </div>
+                        <p className="text-[11px] text-slate-400 leading-relaxed">
+                          When eBay displays <strong className="text-emerald-400">&quot;Authorization successfully completed&quot;</strong>, copy the full URL from that browser tab&apos;s address bar (or just the code) and paste it below:
+                        </p>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            placeholder="https://auth2.ebay.com/oauth2/ThirdPartyAuthSucessFailure?isAuthSuccessful=true&state=...&code=v^1.1#..."
+                            value={pastedCodeOrUrl}
+                            onChange={(e) => {
+                              setPastedCodeOrUrl(e.target.value);
+                              setModalError(null);
+                            }}
+                            className="flex-1 px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs outline-none focus:border-brand-500 font-mono"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleCompleteEbayOAuth()}
+                            disabled={isVerifyingEbayCode || !pastedCodeOrUrl.trim()}
+                            className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-md transition flex items-center gap-1.5 shrink-0"
+                          >
+                            {isVerifyingEbayCode ? (
+                              <>
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                <span>Connecting...</span>
+                              </>
+                            ) : (
+                              <>
+                                <CheckCircle2 className="w-3.5 h-3.5" />
+                                <span>Complete Connection</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                        <p className="text-[10px] text-slate-500">
+                          💡 You can paste the entire address bar URL from the confirmation tab — the authorization code will be extracted automatically.
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="p-3 rounded-xl bg-amber-950/30 border border-amber-800/40 text-[11px] text-amber-200">
+                        <span className="font-semibold block mb-0.5">💡 Localhost & Developer Testing:</span>
+                        Paste your 18-month <strong>Refresh Token</strong> from the Developer Portal. The server will immediately generate 2-hour access tokens and auto-renew them silently before every sync.
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">
+                          eBay OAuth Refresh Token (Recommended)
+                        </label>
+                        <input
+                          type="password"
+                          placeholder="v^1.1#i^1#p^3#... (18-Month Refresh Token)"
+                          value={refreshToken}
+                          onChange={(e) => setRefreshToken(e.target.value)}
+                          className="w-full px-3.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-white text-xs outline-none focus:border-brand-500 font-mono"
+                        />
+                        <p className="text-[10px] text-slate-500 mt-1">
+                          Lasts up to 18 months. Provides permanent auto-renewal with no 2-hour expiration.
+                        </p>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">
+                          User Access Token (Optional fallback)
+                        </label>
+                        <input
+                          type="password"
+                          placeholder="v^1.1#i^1#... (2-Hour User Token)"
+                          value={accessToken}
+                          onChange={(e) => setAccessToken(e.target.value)}
+                          className="w-full px-3.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-white text-xs outline-none focus:border-brand-500 font-mono"
+                        />
+                        <p className="text-[10px] text-slate-500 mt-1">
+                          Optional if Refresh Token is provided above (the server will generate it automatically).
+                        </p>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">
+                          Authorization Code (Optional)
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="v^1.1#i^1#... (If obtained from eBay consent URL)"
+                          value={authCode}
+                          onChange={(e) => setAuthCode(e.target.value)}
+                          className="w-full px-3.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-white text-xs outline-none focus:border-brand-500 font-mono"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    {selectedType === ChannelType.SHOPIFY
+                      ? 'Shopify Admin API Access Token'
+                      : 'Admin API Access Token / API Key'}
+                  </label>
+                  <input
+                    type="password"
+                    required
+                    placeholder={
+                      selectedType === ChannelType.SHOPIFY
+                        ? 'shpat_xxxxxxxxxxxxxxxxxxxxx'
+                        : 'API Key or Bearer Token'
+                    }
+                    value={accessToken}
+                    onChange={(e) => setAccessToken(e.target.value)}
+                    className="w-full px-3.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-white text-xs outline-none focus:border-brand-500 font-mono"
+                  />
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    Live-validated against Shopify Admin API before saving. Encrypted with AES-256-GCM.
+                  </p>
+                </div>
+              )}
 
               <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-800">
                 <button
@@ -613,13 +922,45 @@ export default function ChannelsPage() {
                 >
                   Cancel
                 </button>
-                <button
-                  type="submit"
-                  disabled={connectMutation.isPending}
-                  className="bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold px-4 py-2 rounded-xl shadow-lg shadow-brand-600/30 transition disabled:opacity-50"
-                >
-                  {connectMutation.isPending ? 'Verifying Credentials...' : 'Save & Authorize'}
-                </button>
+                {selectedType === ChannelType.EBAY && ebayAuthMode === 'oauth' ? (
+                  pastedCodeOrUrl.trim() ? (
+                    <button
+                      type="button"
+                      onClick={() => handleCompleteEbayOAuth()}
+                      disabled={isVerifyingEbayCode}
+                      className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-4 py-2 rounded-xl shadow-lg shadow-emerald-600/30 transition disabled:opacity-50 flex items-center gap-1.5"
+                    >
+                      {isVerifyingEbayCode ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          <span>Verifying & Connecting...</span>
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          <span>Complete & Verify Connection</span>
+                        </>
+                      )}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleEbayOAuthConnect}
+                      disabled={isOAuthRedirecting}
+                      className="bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold px-4 py-2 rounded-xl shadow-lg shadow-brand-600/30 transition disabled:opacity-50"
+                    >
+                      {isOAuthRedirecting ? 'Opening eBay Window...' : 'Connect via eBay OAuth'}
+                    </button>
+                  )
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={connectMutation.isPending}
+                    className="bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold px-4 py-2 rounded-xl shadow-lg shadow-brand-600/30 transition disabled:opacity-50"
+                  >
+                    {connectMutation.isPending ? 'Verifying Credentials...' : 'Save & Connect'}
+                  </button>
+                )}
               </div>
             </form>
           </div>

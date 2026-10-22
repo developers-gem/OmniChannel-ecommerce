@@ -26,8 +26,10 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  Unlink,
 } from 'lucide-react';
 import { useCurrency } from '@/lib/currency';
+import { ZeroMappedModal } from '@/components/products/ZeroMappedModal';
 
 export default function ProductsPage() {
   const { format } = useCurrency();
@@ -39,6 +41,19 @@ export default function ProductsPage() {
   const [publishingId, setPublishingId] = useState<string | null>(null);
   const [isImporting, setIsImporting] = useState(false);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // 0-Mapped Products Modal state
+  const [isZeroMappedModalOpen, setIsZeroMappedModalOpen] = useState(false);
+
+  // Fetch 0-mapped products count
+  const { data: zeroMappedCountData } = useQuery({
+    queryKey: ['zero-mapped-count'],
+    queryFn: async () => {
+      const res: any = await api.get('/products/zero-mapped');
+      return res;
+    },
+  });
+  const zeroMappedCount = zeroMappedCountData?.totalZeroMapped || 0;
 
   // Export CSV Modal states
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
@@ -330,6 +345,22 @@ export default function ProductsPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
+          {/* Master Button: 0-Mapped Products */}
+          <button
+            type="button"
+            onClick={() => setIsZeroMappedModalOpen(true)}
+            className="flex items-center gap-2 bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 text-white text-xs font-semibold px-3.5 py-2.5 rounded-xl shadow-lg shadow-amber-600/20 transition cursor-pointer"
+            title="View and map all 0-mapped products to connected channels"
+          >
+            <Unlink className="w-3.5 h-3.5" />
+            <span>0-Mapped Products</span>
+            {zeroMappedCount > 0 && (
+              <span className="bg-amber-950/90 text-amber-300 border border-amber-800/80 px-2 py-0.5 rounded-full text-[10px] font-bold">
+                {zeroMappedCount}
+              </span>
+            )}
+          </button>
+
           {/* Replace Import from Shopify with Import from Channels */}
           <button
             onClick={() => setIsImportModalOpen(true)}
@@ -1056,6 +1087,16 @@ export default function ProductsPage() {
           </div>
         </div>
       )}
+
+      {/* MODAL 4: 0-Mapped & Unmapped Products Master Modal */}
+      <ZeroMappedModal
+        isOpen={isZeroMappedModalOpen}
+        onClose={() => setIsZeroMappedModalOpen(false)}
+        onSuccessNotification={(msg) => {
+          setNotification({ type: 'success', text: msg });
+          setTimeout(() => setNotification(null), 8000);
+        }}
+      />
     </div>
   );
 }

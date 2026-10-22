@@ -76,7 +76,14 @@ export class ProductsController {
           (v) => v.canonicalProductId.toString() === prod._id.toString()
         );
         const mappedCount = mappings.filter(
-          (m) => m.canonicalProductId.toString() === prod._id.toString()
+          (m) =>
+            m.canonicalProductId.toString() === prod._id.toString() &&
+            m.status === MappingStatus.MAPPED
+        ).length;
+        const unmappedCount = mappings.filter(
+          (m) =>
+            m.canonicalProductId.toString() === prod._id.toString() &&
+            m.status === MappingStatus.UNMAPPED
         ).length;
 
         const totalStock = prodVariants.reduce((sum, v) => {
@@ -90,6 +97,7 @@ export class ProductsController {
           ...prod,
           variants: prodVariants,
           mappedCount,
+          unmappedCount,
           totalStock,
         };
       });
@@ -445,6 +453,138 @@ export class ProductsController {
     }
   }
 
+  // GET /api/v1/products/zero-mapped - List all canonical products with 0 active mappings or unmapped from channels
+  static async listZeroMapped(req: Request, res: Response) {
+    try {
+      const search = (req.query.search as string) || '';
+
+      const activeChannels = await ChannelConnection.find({
+        organizationId: req.tenantId,
+        status: ChannelStatus.ACTIVE,
+      }).lean();
+
+      const prodQuery: any = { organizationId: req.tenantId };
+      if (search) {
+        prodQuery.$or = [
+          { title: { $regex: search, $options: 'i' } },
+          { masterSku: { $regex: search, $options: 'i' } },
+          { brand: { $regex: search, $options: 'i' } },
+        ];
+      }
+
+      const products = await CanonicalProduct.find(prodQuery)
+        .sort({ createdAt: -1 })
+        .lean();
+
+      const productIds = products.map((p) => p._id);
+
+      const variants = await ProductVariant.find({
+        canonicalProductId: { $in: productIds },
+        organizationId: req.tenantId,
+      }).lean();
+
+      const variantIds = variants.map((v) => v._id);
+      const inventoryItems = await InventoryItem.find({
+        canonicalVariantId: { $in: variantIds },
+        organizationId: req.tenantId,
+      }).lean();
+
+      const mappings = await ProductMapping.find({
+        canonicalProductId: { $in: productIds },
+        organizationId: req.tenantId,
+      })
+        .populate('channelConnectionId', 'name channelType status')
+        .lean();
+
+      const enrichedList: any[] = [];
+
+      for (const prod of products) {
+        const prodVariants = variants.filter(
+          (v) => v.canonicalProductId.toString() === prod._id.toString()
+        );
+        const prodMappings = mappings.filter(
+          (m) => m.canonicalProductId.toString() === prod._id.toString()
+        );
+
+        const activeMapped = prodMappings.filter((m) => m.status === MappingStatus.MAPPED);
+        const unmapped = prodMappings.filter((m) => m.status === MappingStatus.UNMAPPED);
+
+        const totalStock = prodVariants.reduce((sum, v) => {
+          const inv = inventoryItems.find(
+            (i) => i.canonicalVariantId.toString() === v._id.toString()
+          );
+          return sum + (inv?.trackedStock || 0);
+        }, 0);
+
+        const unmappedFrom = unmapped.map((m: any) => ({
+          channelConnectionId: m.channelConnectionId?._id || m.channelConnectionId,
+          channelName: m.channelConnectionId?.name || 'Store',
+          channelType: m.channelConnectionId?.channelType || m.channelType,
+          unmappedAt: m.unmappedAt || m.updatedAt,
+          unmappedReason: m.unmappedReason || 'Unmapped from product mapping page',
+        }));
+
+        const activeChannelsList = activeMapped.map((m: any) => ({
+          channelConnectionId: m.channelConnectionId?._id || m.channelConnectionId,
+          channelName: m.channelConnectionId?.name || 'Store',
+          channelType: m.channelConnectionId?.channelType || m.channelType,
+        }));
+
+        const activeChannelIdSet = new Set(
+          activeChannelsList.map((c) => String(c.channelConnectionId))
+        );
+
+        const availableChannels = activeChannels.map((c: any) => {
+          const isMapped = activeChannelIdSet.has(String(c._id));
+          const wasUnmapped = unmapped.some(
+            (u: any) => String(u.channelConnectionId?._id || u.channelConnectionId) === String(c._id)
+          );
+          return {
+            channelConnectionId: c._id,
+            channelName: c.name,
+            channelType: c.channelType,
+            isMapped,
+            isPreviouslyUnmapped: wasUnmapped,
+          };
+        });
+
+        const isZeroMapped = activeMapped.length === 0;
+
+        // Include all products that have 0 active mappings OR have unmapped channel records
+        if (isZeroMapped || unmapped.length > 0) {
+          enrichedList.push({
+            ...prod,
+            variants: prodVariants,
+            totalStock,
+            activeMappedCount: activeMapped.length,
+            isZeroMapped,
+            unmappedFrom,
+            activeChannels: activeChannelsList,
+            availableChannels,
+          });
+        }
+      }
+
+      return res.json({
+        success: true,
+        data: enrichedList,
+        totalZeroMapped: enrichedList.filter((p) => p.isZeroMapped).length,
+        totalWithUnmappedChannels: enrichedList.length,
+        activeChannels: activeChannels.map((c: any) => ({
+          id: c._id,
+          name: c.name,
+          channelType: c.channelType,
+        })),
+      });
+    } catch (error: any) {
+      logger.error('Failed to list 0-mapped products:', error);
+      return res.status(500).json({
+        success: false,
+        error: { message: error.message || 'Failed to list 0-mapped products' },
+      });
+    }
+  }
+
   // POST /api/v1/products/:id/publish - Push/publish a canonical product to connected channels (Shopify, etc.)
   static async publish(req: Request, res: Response) {
     try {
@@ -662,15 +802,21 @@ export class ProductsController {
                     channelConnectionId: conn._id,
                   },
                   {
-                    canonicalProductId: product._id,
-                    canonicalVariantId: platformVariant._id,
-                    channelConnectionId: conn._id,
-                    channelProductId: channelProd._id,
-                    channelType: ChannelType.SHOPIFY,
-                    mappingConfidence: MappingConfidence.EXACT_SKU,
-                    syncPrice: true,
-                    syncInventory: true,
-                    status: MappingStatus.MAPPED,
+                    $set: {
+                      canonicalProductId: product._id,
+                      canonicalVariantId: platformVariant._id,
+                      channelConnectionId: conn._id,
+                      channelProductId: channelProd._id,
+                      channelType: ChannelType.SHOPIFY,
+                      mappingConfidence: MappingConfidence.EXACT_SKU,
+                      syncPrice: true,
+                      syncInventory: true,
+                      status: MappingStatus.MAPPED,
+                    },
+                    $unset: {
+                      unmappedAt: 1,
+                      unmappedReason: 1,
+                    },
                   },
                   { upsert: true, new: true }
                 );
@@ -702,7 +848,7 @@ export class ProductsController {
           }
         } else if (conn.channelType === ChannelType.EBAY) {
           try {
-            const { host, token } = EbayService.getCredentials(conn);
+            const { host, token } = await EbayService.getValidCredentials(conn);
             const createdMappings: any[] = [];
 
             for (let i = 0; i < variants.length; i++) {
@@ -764,15 +910,21 @@ export class ProductsController {
                     channelConnectionId: conn._id,
                   },
                   {
-                    canonicalProductId: product._id,
-                    canonicalVariantId: platformVariant._id,
-                    channelConnectionId: conn._id,
-                    channelProductId: channelProd._id,
-                    channelType: ChannelType.EBAY,
-                    mappingConfidence: MappingConfidence.EXACT_SKU,
-                    syncPrice: true,
-                    syncInventory: true,
-                    status: MappingStatus.MAPPED,
+                    $set: {
+                      canonicalProductId: product._id,
+                      canonicalVariantId: platformVariant._id,
+                      channelConnectionId: conn._id,
+                      channelProductId: channelProd._id,
+                      channelType: ChannelType.EBAY,
+                      mappingConfidence: MappingConfidence.EXACT_SKU,
+                      syncPrice: true,
+                      syncInventory: true,
+                      status: MappingStatus.MAPPED,
+                    },
+                    $unset: {
+                      unmappedAt: 1,
+                      unmappedReason: 1,
+                    },
                   },
                   { upsert: true, new: true }
                 );
@@ -834,6 +986,122 @@ export class ProductsController {
       return res.status(500).json({
         success: false,
         error: { message: error.message || 'Failed to publish product' },
+      });
+    }
+  }
+
+  // POST /api/v1/products/bulk-publish - Bulk map/push multiple products to selected channels
+  static async bulkPublish(req: Request, res: Response) {
+    try {
+      const { items, productIds, channelConnectionIds, forceRepublish = true } = req.body;
+
+      let tasks: { productId: string; targetChannelIds?: string[] }[] = [];
+
+      if (Array.isArray(items) && items.length > 0) {
+        tasks = items.map((item: any) => ({
+          productId: String(item.productId),
+          targetChannelIds:
+            Array.isArray(item.channelConnectionIds) && item.channelConnectionIds.length > 0
+              ? item.channelConnectionIds
+              : Array.isArray(channelConnectionIds)
+              ? channelConnectionIds
+              : undefined,
+        }));
+      } else if (Array.isArray(productIds) && productIds.length > 0) {
+        const defaultTargets =
+          Array.isArray(channelConnectionIds) && channelConnectionIds.length > 0
+            ? channelConnectionIds
+            : undefined;
+        tasks = productIds.map((pId: string) => ({
+          productId: String(pId),
+          targetChannelIds: defaultTargets,
+        }));
+      } else {
+        return res.status(400).json({
+          success: false,
+          error: { message: 'Must provide either "items" or "productIds"' },
+        });
+      }
+
+      const overallResults: any[] = [];
+      let successfulCount = 0;
+      let failedCount = 0;
+
+      for (const task of tasks) {
+        try {
+          const fakeReq: any = {
+            params: { id: task.productId },
+            body: {
+              channelConnectionIds: task.targetChannelIds,
+              forceRepublish,
+            },
+            tenantId: req.tenantId,
+          };
+
+          let capturedData: any = null;
+          let capturedError: any = null;
+          let capturedStatus = 200;
+
+          const fakeRes: any = {
+            status: (st: number) => {
+              capturedStatus = st;
+              return fakeRes;
+            },
+            json: (payload: any) => {
+              if (payload.success) {
+                capturedData = payload.data;
+              } else {
+                capturedError = payload.error;
+              }
+              return fakeRes;
+            },
+          };
+
+          await ProductsController.publish(fakeReq, fakeRes);
+
+          if (capturedData && capturedStatus < 400) {
+            successfulCount++;
+            overallResults.push({
+              productId: task.productId,
+              title: capturedData.title,
+              success: true,
+              results: capturedData.results,
+            });
+          } else {
+            failedCount++;
+            overallResults.push({
+              productId: task.productId,
+              success: false,
+              error: capturedError?.message || 'Publishing failed',
+            });
+          }
+        } catch (err: any) {
+          failedCount++;
+          overallResults.push({
+            productId: task.productId,
+            success: false,
+            error: err.message || 'Publishing failed',
+          });
+        }
+      }
+
+      return res.json({
+        success: true,
+        data: {
+          totalProcessed: tasks.length,
+          successfulCount,
+          failedCount,
+          results: overallResults,
+          message: `Successfully mapped and pushed ${successfulCount} products!${
+            failedCount > 0 ? ` (${failedCount} had errors or missing channels)` : ''
+          }`,
+        },
+      });
+    } catch (error: any) {
+      logger.error('Failed to bulk publish products:', error);
+      return res.status(500).json({
+        success: false,
+        error: { message: error.message || 'Failed to bulk publish products' },
       });
     }
   }

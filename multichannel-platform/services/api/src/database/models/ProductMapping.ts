@@ -16,6 +16,8 @@ export interface IProductMappingDocument extends Document {
     value: number;
   };
   status: MappingStatus;
+  unmappedAt?: Date;
+  unmappedReason?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -86,6 +88,12 @@ const ProductMappingSchema = new Schema<IProductMappingDocument>(
       default: MappingStatus.MAPPED,
       index: true,
     },
+    unmappedAt: {
+      type: Date,
+    },
+    unmappedReason: {
+      type: String,
+    },
   },
   {
     timestamps: true,
@@ -101,6 +109,7 @@ ProductMappingSchema.index(
 );
 
 ProductMappingSchema.index({ organizationId: 1, canonicalVariantId: 1 });
+ProductMappingSchema.index({ organizationId: 1, status: 1 });
 
 export const ProductMapping = mongoose.model<IProductMappingDocument>(
   'ProductMapping',

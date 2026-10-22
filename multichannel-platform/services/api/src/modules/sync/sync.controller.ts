@@ -154,7 +154,7 @@ export class SyncController {
                 }
               } else if (conn.channelType === ChannelType.EBAY) {
                 try {
-                  const { host, token } = EbayService.getCredentials(conn);
+                  const { host, token } = await EbayService.getValidCredentials(conn);
                   const items = await EbayService.getInventoryItems(host, token, 100);
                   for (const item of items) {
                     await ChannelProduct.findOneAndUpdate(
@@ -239,7 +239,7 @@ export class SyncController {
                 }
               } else if (conn?.channelType === ChannelType.EBAY && chProd && variant) {
                 try {
-                  const { host, token } = EbayService.getCredentials(conn);
+                  const { host, token } = await EbayService.getValidCredentials(conn);
                   const invItem = await InventoryItem.findOne({
                     organizationId: req.tenantId,
                     canonicalVariantId: variant._id,
@@ -307,7 +307,7 @@ export class SyncController {
                 }
               } else if (conn?.channelType === ChannelType.EBAY && chProd?.sku && variant) {
                 try {
-                  const { host, token } = EbayService.getCredentials(conn);
+                  const { host, token } = await EbayService.getValidCredentials(conn);
                   const success = await EbayService.setInventoryItem(host, token, chProd.sku, {
                     title: chProd.title,
                     quantity: chProd.inventoryQuantity || 0,
@@ -428,7 +428,7 @@ export class SyncController {
           }
         } else if (conn.channelType === ChannelType.EBAY) {
           try {
-            const { host, token } = EbayService.getCredentials(conn);
+            const { host, token } = await EbayService.getValidCredentials(conn);
             const items = await EbayService.getInventoryItems(host, token, 100);
             for (const item of items) {
               await ChannelProduct.findOneAndUpdate(

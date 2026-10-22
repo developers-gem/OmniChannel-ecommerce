@@ -14,7 +14,7 @@
     "dev:worker": "npm run dev --workspace=@multichannel/worker",
     "dev:web": "npm run dev --workspace=@multichannel/web",
     "dev": "concurrently \"npm run dev:api\" \"npm run dev:worker\" \"npm run dev:web\"",
-    "test": "vitest run tests",
+    "test": "vitest run tests --fileParallelism=false",
     "lint": "npm run lint --workspaces --if-present"
   },
   "devDependencies": {

@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
+import Link from 'next/link';
 import {
   GitMerge,
   Check,
@@ -19,6 +20,7 @@ import {
   Info,
   ChevronLeft,
   ChevronRight,
+  Unlink,
 } from 'lucide-react';
 import { MappingConfidence } from '@multichannel/shared';
 import { useCurrency } from '@/lib/currency';
@@ -73,6 +75,16 @@ export default function MappingPage() {
     },
   });
 
+  // Fetch count of unmapped products
+  const { data: unmappedCountRes } = useQuery({
+    queryKey: ['unmapped-mappings-count'],
+    queryFn: async () => {
+      const res: any = await api.get('/mappings/unmapped?page=1&limit=1');
+      return res;
+    },
+  });
+  const unmappedCount = unmappedCountRes?.pagination?.total || 0;
+
   // Map single listing
   const mapMutation = useMutation({
     mutationFn: async (payload: { canonicalVariantId: string; channelProductId: string; confidence?: string }) => {
@@ -82,6 +94,8 @@ export default function MappingPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['product-mappings'] });
       queryClient.invalidateQueries({ queryKey: ['mapping-suggestions'] });
+      queryClient.invalidateQueries({ queryKey: ['unmapped-mappings-count'] });
+      queryClient.invalidateQueries({ queryKey: ['unmapped-mappings'] });
     },
   });
 
@@ -94,6 +108,8 @@ export default function MappingPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['product-mappings'] });
       queryClient.invalidateQueries({ queryKey: ['mapping-suggestions'] });
+      queryClient.invalidateQueries({ queryKey: ['unmapped-mappings-count'] });
+      queryClient.invalidateQueries({ queryKey: ['unmapped-mappings'] });
     },
   });
 
@@ -103,9 +119,23 @@ export default function MappingPage() {
       const res: any = await api.delete(`/mappings/${id}`);
       return res.data;
     },
-    onSuccess: () => {
+    onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ['product-mappings'] });
       queryClient.invalidateQueries({ queryKey: ['mapping-suggestions'] });
+      queryClient.invalidateQueries({ queryKey: ['unmapped-mappings-count'] });
+      queryClient.invalidateQueries({ queryKey: ['unmapped-mappings'] });
+      setImportNotification({
+        type: 'success',
+        message: data?.data?.message || 'Product listing unmapped and deleted from store',
+      });
+      setTimeout(() => setImportNotification(null), 8000);
+    },
+    onError: (err: any) => {
+      setImportNotification({
+        type: 'error',
+        message: err.message || 'Failed to unmap product',
+      });
+      setTimeout(() => setImportNotification(null), 8000);
     },
   });
 
@@ -115,9 +145,16 @@ export default function MappingPage() {
       const res: any = await api.delete('/mappings');
       return res.data;
     },
-    onSuccess: () => {
+    onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ['product-mappings'] });
       queryClient.invalidateQueries({ queryKey: ['mapping-suggestions'] });
+      queryClient.invalidateQueries({ queryKey: ['unmapped-mappings-count'] });
+      queryClient.invalidateQueries({ queryKey: ['unmapped-mappings'] });
+      setImportNotification({
+        type: 'success',
+        message: data?.data?.message || 'All listings unmapped and removed from stores',
+      });
+      setTimeout(() => setImportNotification(null), 8000);
     },
   });
 
@@ -367,6 +404,20 @@ export default function MappingPage() {
             </span>
           )}
         </button>
+
+        <Link
+          href="/unmapped-products"
+          className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition text-slate-400 hover:text-white hover:bg-slate-800/40 cursor-pointer"
+          title="View all unmapped products removed from stores"
+        >
+          <Unlink className="w-3.5 h-3.5 text-amber-400" />
+          <span>Unmapped Products</span>
+          {unmappedCount > 0 && (
+            <span className="bg-amber-950/80 text-amber-400 border border-amber-800/60 px-2 py-0.5 rounded-full text-[10px] font-bold">
+              {unmappedCount}
+            </span>
+          )}
+        </Link>
       </div>
 
       {/* Tab 1: Active Mappings */}
