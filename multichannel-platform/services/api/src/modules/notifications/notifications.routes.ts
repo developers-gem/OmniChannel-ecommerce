@@ -11,5 +11,7 @@ router.use(enforceTenantIsolation);
 router.get('/', NotificationsController.list);
 router.put('/:id/read', NotificationsController.markAsRead);
 router.put('/read-all', NotificationsController.markAllAsRead);
+router.delete('/clear-all', NotificationsController.clearAll);
+router.delete('/:id', NotificationsController.delete);
 
 export default router;

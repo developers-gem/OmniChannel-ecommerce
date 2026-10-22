@@ -12,9 +12,12 @@ import {
   SyncStatus,
   MappingConfidence,
   MappingStatus,
+  NotificationSeverity,
+  NotificationCategory,
 } from '@multichannel/shared';
 import { ShopifyService } from '../../services/shopify.service';
 import { EbayService } from '../../services/ebay.service';
+import { NotificationService } from '../../services/notification.service';
 import { logger } from '../../utils/logger';
 
 export class MappingsController {
@@ -233,6 +236,16 @@ export class MappingsController {
         status: MappingStatus.MAPPED,
       });
 
+      await NotificationService.create({
+        organizationId: req.tenantId,
+        title: `Product Mapped: ${channelProduct.title}`,
+        message: `Linked channel product "${channelProduct.title}" to catalog SKU "${variant.sku}".`,
+        severity: NotificationSeverity.SUCCESS,
+        category: NotificationCategory.INTEGRATION,
+        channelType: channelProduct.channelType,
+        link: '/mappings',
+      });
+
       return res.status(201).json({
         success: true,
         data: mapping,
@@ -284,6 +297,17 @@ export class MappingsController {
           );
           mappedCount++;
         }
+      }
+
+      if (mappedCount > 0) {
+        await NotificationService.create({
+          organizationId: req.tenantId,
+          title: `Products Bulk Mapped`,
+          message: `Successfully mapped ${mappedCount} products across connected channels.`,
+          severity: NotificationSeverity.SUCCESS,
+          category: NotificationCategory.INTEGRATION,
+          link: '/mappings',
+        });
       }
 
       return res.json({
@@ -411,6 +435,17 @@ export class MappingsController {
       const finalMsg = storeDeleted
         ? `Product listing unmapped from platform ${storeDeleteMessage}`
         : `Product listing successfully unmapped from ${conn?.name || 'channel'}`;
+
+      const prodTitle = (mapping.canonicalProductId as any)?.title || chProd?.title || 'Product';
+      await NotificationService.create({
+        organizationId: req.tenantId,
+        title: `Product Unmapped: ${prodTitle}`,
+        message: finalMsg,
+        severity: NotificationSeverity.WARNING,
+        category: NotificationCategory.INTEGRATION,
+        channelType: conn?.channelType,
+        link: '/mappings/unmapped',
+      });
 
       return res.json({
         success: true,
@@ -548,6 +583,16 @@ export class MappingsController {
       mapping.unmappedAt = undefined;
       mapping.unmappedReason = undefined;
       await mapping.save();
+
+      await NotificationService.create({
+        organizationId: req.tenantId,
+        title: `Product Re-mapped: ${prod.title}`,
+        message: `Product "${prod.title}" was successfully re-mapped and synced with ${conn.name} (${conn.channelType}).`,
+        severity: NotificationSeverity.SUCCESS,
+        category: NotificationCategory.INTEGRATION,
+        channelType: conn.channelType,
+        link: '/mappings',
+      });
 
       return res.json({
         success: true,

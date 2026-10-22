@@ -4,11 +4,22 @@ import { Notification } from '../../database/models';
 export class NotificationsController {
   static async list(req: Request, res: Response) {
     try {
-      const notifications = await Notification.find({
-        organizationId: req.tenantId,
-      })
+      const { category, channelType, isRead } = req.query;
+
+      const filter: any = { organizationId: req.tenantId };
+      if (category) {
+        filter.category = category;
+      }
+      if (channelType) {
+        filter.channelType = channelType;
+      }
+      if (isRead !== undefined) {
+        filter.isRead = isRead === 'true';
+      }
+
+      const notifications = await Notification.find(filter)
         .sort({ createdAt: -1 })
-        .limit(50)
+        .limit(100)
         .lean();
 
       const unreadCount = await Notification.countDocuments({
@@ -16,11 +27,16 @@ export class NotificationsController {
         isRead: false,
       });
 
+      const totalCount = await Notification.countDocuments({
+        organizationId: req.tenantId,
+      });
+
       return res.json({
         success: true,
         data: {
           notifications,
           unreadCount,
+          totalCount,
         },
       });
     } catch (error: any) {
@@ -50,6 +66,31 @@ export class NotificationsController {
         { organizationId: req.tenantId, isRead: false },
         { $set: { isRead: true } }
       );
+      return res.json({ success: true });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: { message: error.message } });
+    }
+  }
+
+  static async delete(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      await Notification.findOneAndDelete({
+        _id: id,
+        organizationId: req.tenantId,
+      });
+      return res.json({ success: true });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: { message: error.message } });
+    }
+  }
+
+  static async clearAll(req: Request, res: Response) {
+    try {
+      await Notification.deleteMany({
+        organizationId: req.tenantId,
+        isRead: true,
+      });
       return res.json({ success: true });
     } catch (error: any) {
       return res.status(500).json({ success: false, error: { message: error.message } });

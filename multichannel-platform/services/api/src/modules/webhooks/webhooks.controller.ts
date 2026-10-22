@@ -15,9 +15,14 @@ import {
   OrderFinancialStatus,
   OrderFulfillmentStatus,
   InventoryChangeType,
+  ChannelProductStatus,
+  SyncStatus,
+  NotificationSeverity,
+  NotificationCategory,
 } from '@multichannel/shared';
 import { decryptSecret } from '../../utils/crypto';
 import { logger } from '../../utils/logger';
+import { NotificationService } from '../../services/notification.service';
 
 export class WebhooksController {
   /**
@@ -81,6 +86,8 @@ export class WebhooksController {
         await WebhooksController.processShopifyInventoryUpdate(connection, req.body);
       } else if (topic === 'products/update') {
         await WebhooksController.processShopifyProductUpdate(connection, req.body);
+      } else if (topic === 'products/create') {
+        await WebhooksController.processShopifyProductCreate(connection, req.body);
       }
 
       eventDoc.status = 'PROCESSED';
@@ -130,6 +137,35 @@ export class WebhooksController {
         payload: req.body,
         processedAt: new Date(),
       });
+
+      // Dispatch notification for eBay events
+      try {
+        const upperTopic = (topic || '').toUpperCase();
+        let notifTitle = 'eBay Notification';
+        let notifMsg = `Received notification "${topic}" from eBay (${connection.name || 'Store'}).`;
+        let notifSeverity = NotificationSeverity.INFO;
+
+        if (upperTopic.includes('ITEM_CREATED') || upperTopic.includes('LISTING_CREATED') || upperTopic.includes('CREATE')) {
+          notifTitle = 'Product Uploaded on eBay';
+          notifMsg = `A new product or listing was uploaded to eBay (${connection.name || 'Store'}).`;
+          notifSeverity = NotificationSeverity.SUCCESS;
+        } else if (upperTopic.includes('REVISED') || upperTopic.includes('UPDATE') || upperTopic.includes('MODIFIED')) {
+          notifTitle = 'Product Modified on eBay';
+          notifMsg = `A product or listing was updated/modified on eBay (${connection.name || 'Store'}).`;
+        }
+
+        await NotificationService.create({
+          organizationId: connection.organizationId,
+          title: notifTitle,
+          message: notifMsg,
+          severity: notifSeverity,
+          category: NotificationCategory.INTEGRATION,
+          channelType: ChannelType.EBAY,
+          link: '/mappings',
+        });
+      } catch (notifErr: any) {
+        logger.warn(`Could not dispatch eBay notification: ${notifErr.message}`);
+      }
 
       return res.status(200).json({ status: 'processed', eventId });
     } catch (err: any) {
@@ -319,11 +355,67 @@ export class WebhooksController {
             reason: 'Webhook: Shopify inventory_levels/update',
           });
 
+          await NotificationService.create({
+            organizationId: connection.organizationId,
+            title: `Shopify Inventory Modified`,
+            message: `Inventory stock updated for SKU "${item.sku}": now ${available} units available on Shopify (${connection.name || 'Store'}).`,
+            severity: NotificationSeverity.INFO,
+            category: NotificationCategory.INVENTORY,
+            channelType: ChannelType.SHOPIFY,
+            link: '/inventory',
+          });
+
           logger.info(`Updated canonical stock for SKU ${item.sku} from Shopify webhook: ${available}`);
         }
       }
     } catch (err: any) {
       logger.error('Failed to process Shopify inventory webhook:', err);
+    }
+  }
+
+  private static async processShopifyProductCreate(connection: any, payload: any) {
+    try {
+      const productId = String(payload.id);
+      if (!productId || !Array.isArray(payload.variants)) return;
+
+      for (const v of payload.variants) {
+        const variantId = String(v.id);
+        const price = parseFloat(v.price) || 0;
+        const qty = v.inventory_quantity || 0;
+
+        await ChannelProduct.findOneAndUpdate(
+          {
+            organizationId: connection.organizationId,
+            channelConnectionId: connection._id,
+            externalProductId: productId,
+            externalVariantId: variantId,
+          },
+          {
+            title: `${payload.title}${payload.variants.length > 1 ? ` - ${v.title}` : ''}`,
+            sku: (v.sku && v.sku.trim()) || `SHOPIFY-${v.id}`,
+            barcode: v.barcode || '',
+            price,
+            inventoryQuantity: qty,
+            status: ChannelProductStatus.ACTIVE,
+            syncStatus: SyncStatus.SYNCED,
+            lastSyncedAt: new Date(),
+            rawPayload: { product: payload, variant: v },
+          },
+          { upsert: true, new: true }
+        );
+      }
+
+      await NotificationService.notifyProductUploaded({
+        organizationId: connection.organizationId,
+        productTitle: payload.title || `Product #${productId}`,
+        channelName: connection.name || 'Shopify',
+        channelType: ChannelType.SHOPIFY,
+        sku: payload.variants[0]?.sku,
+      });
+
+      logger.info(`Processed new Shopify product ${productId} from products/create webhook`);
+    } catch (err: any) {
+      logger.error('Failed to process Shopify product create webhook:', err);
     }
   }
 
@@ -354,6 +446,16 @@ export class WebhooksController {
           }
         );
       }
+
+      await NotificationService.notifyProductModified({
+        organizationId: connection.organizationId,
+        productTitle: payload.title || `Product #${productId}`,
+        source: `Shopify (${connection.name || 'Store'})`,
+        channelType: ChannelType.SHOPIFY,
+        changesSummary: `Updated variants and channel listing data.`,
+        link: '/mappings',
+      });
+
       logger.info(`Updated channel listings for Shopify product ${productId} from webhook`);
     } catch (err: any) {
       logger.error('Failed to process Shopify product webhook:', err);

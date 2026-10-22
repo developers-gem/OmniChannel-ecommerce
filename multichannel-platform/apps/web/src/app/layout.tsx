@@ -63,7 +63,7 @@ export default function RootLayout({
         />
         <script
           dangerouslySetInnerHTML={{
-            __html: `try{var t=localStorage.getItem('omnichannel_theme')||'emerald';document.documentElement.setAttribute('data-theme',t);}catch(e){}`,
+            __html: `try{var t=localStorage.getItem('omnichannel_theme')||'emerald';document.documentElement.setAttribute('data-theme',t);if(t==='aidemy'||t==='shopify'){document.documentElement.classList.remove('dark');document.documentElement.classList.add('light');}else{document.documentElement.classList.remove('light');document.documentElement.classList.add('dark');}}catch(e){}`,
           }}
         />
       </head>

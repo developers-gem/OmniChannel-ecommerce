@@ -9,16 +9,26 @@
    2. Sapphire Horizon (Midnight Navy & Electric Blue Command Center)
    3. Cosmic Amethyst (Royal Nebula & Cosmic Violet AI Hub)
    4. Sunset Amber (Warm Espresso Titanium & Radiant Gold)
+   5. Aidemy AI (Screenshot 1: Modern Lavender Aura & Radiant Amber)
+   6. Shopify Polaris (Screenshot 2: Official Dark Header, Light Sidebar & Polaris Green)
+   7. Midnight OLED (Ultra Deep Night - True Pitch Black & Electric Cyan)
    ========================================================================= */
 
 /* Theme 1: Emerald Obsidian (Default) */
 :root,
 html[data-theme='emerald'] {
-  --color-slate-950: 2 6 23;
-  --color-slate-900: 15 23 42;
-  --color-slate-850: 21 31 50;
-  --color-slate-800: 30 41 59;
+  --color-slate-50: 248 250 252;
+  --color-slate-100: 241 245 249;
+  --color-slate-200: 226 232 240;
+  --color-slate-300: 203 213 225;
+  --color-slate-400: 148 163 184;
+  --color-slate-500: 100 116 139;
+  --color-slate-600: 71 85 105;
   --color-slate-700: 51 65 85;
+  --color-slate-800: 30 41 59;
+  --color-slate-850: 21 31 50;
+  --color-slate-900: 15 23 42;
+  --color-slate-950: 2 6 23;
 
   --color-brand-50: 240 253 244;
   --color-brand-100: 220 252 231;
@@ -41,11 +51,18 @@ html[data-theme='emerald'] {
 
 /* Theme 2: Sapphire Horizon (Midnight Navy & Electric Blue) */
 html[data-theme='sapphire'] {
-  --color-slate-950: 5 11 26;
-  --color-slate-900: 11 21 44;
-  --color-slate-850: 16 30 62;
-  --color-slate-800: 26 44 86;
+  --color-slate-50: 248 250 252;
+  --color-slate-100: 241 245 249;
+  --color-slate-200: 226 232 240;
+  --color-slate-300: 203 213 225;
+  --color-slate-400: 148 163 184;
+  --color-slate-500: 100 116 139;
+  --color-slate-600: 71 85 105;
   --color-slate-700: 42 66 122;
+  --color-slate-800: 26 44 86;
+  --color-slate-850: 16 30 62;
+  --color-slate-900: 11 21 44;
+  --color-slate-950: 5 11 26;
 
   --color-brand-50: 239 246 255;
   --color-brand-100: 219 234 254;
@@ -68,11 +85,18 @@ html[data-theme='sapphire'] {
 
 /* Theme 3: Cosmic Amethyst (Royal Nebula & Cosmic Violet) */
 html[data-theme='amethyst'] {
-  --color-slate-950: 11 8 22;
-  --color-slate-900: 20 15 38;
-  --color-slate-850: 29 22 54;
-  --color-slate-800: 45 35 80;
+  --color-slate-50: 248 250 252;
+  --color-slate-100: 241 245 249;
+  --color-slate-200: 226 232 240;
+  --color-slate-300: 203 213 225;
+  --color-slate-400: 148 163 184;
+  --color-slate-500: 100 116 139;
+  --color-slate-600: 71 85 105;
   --color-slate-700: 68 53 118;
+  --color-slate-800: 45 35 80;
+  --color-slate-850: 29 22 54;
+  --color-slate-900: 20 15 38;
+  --color-slate-950: 11 8 22;
 
   --color-brand-50: 250 245 255;
   --color-brand-100: 243 232 255;
@@ -95,11 +119,18 @@ html[data-theme='amethyst'] {
 
 /* Theme 4: Sunset Amber (Titanium Charcoal & Radiant Gold) */
 html[data-theme='amber'] {
-  --color-slate-950: 16 13 10;
-  --color-slate-900: 26 21 16;
-  --color-slate-850: 36 29 23;
-  --color-slate-800: 54 44 35;
+  --color-slate-50: 248 250 252;
+  --color-slate-100: 241 245 249;
+  --color-slate-200: 226 232 240;
+  --color-slate-300: 203 213 225;
+  --color-slate-400: 148 163 184;
+  --color-slate-500: 100 116 139;
+  --color-slate-600: 71 85 105;
   --color-slate-700: 82 67 54;
+  --color-slate-800: 54 44 35;
+  --color-slate-850: 36 29 23;
+  --color-slate-900: 26 21 16;
+  --color-slate-950: 16 13 10;
 
   --color-brand-50: 255 251 235;
   --color-brand-100: 254 243 199;
@@ -120,6 +151,108 @@ html[data-theme='amber'] {
   --accent: #f59e0b;
 }
 
+/* Theme 5: Aidemy AI (Screenshot 1: Lavender Glow & Radiant Amber) */
+html[data-theme='aidemy'] {
+  --color-slate-50: 15 23 42;
+  --color-slate-100: 17 24 39;
+  --color-slate-200: 31 41 55;
+  --color-slate-300: 75 85 99;
+  --color-slate-400: 107 114 128;
+  --color-slate-500: 156 163 175;
+  --color-slate-600: 209 213 219;
+  --color-slate-700: 216 180 254;
+  --color-slate-800: 233 213 255;
+  --color-slate-850: 245 240 252;
+  --color-slate-900: 255 255 255;
+  --color-slate-950: 251 249 253;
+
+  --color-brand-50: 250 245 255;
+  --color-brand-100: 243 232 255;
+  --color-brand-200: 233 213 255;
+  --color-brand-300: 216 180 254;
+  --color-brand-400: 168 85 247;
+  --color-brand-500: 147 51 234;
+  --color-brand-600: 126 34 206;
+  --color-brand-700: 107 33 168;
+  --color-brand-800: 88 28 135;
+  --color-brand-900: 59 7 100;
+  --color-brand-950: 36 0 70;
+
+  --background: #fbf9fd;
+  --foreground: #111827;
+  --card: #ffffff;
+  --card-border: #e9d5ff;
+  --accent: #9333ea;
+}
+
+/* Theme 6: Shopify Polaris (Screenshot 2: Dark Header, Light Sidebar & Polaris Green) */
+html[data-theme='shopify'] {
+  --color-slate-50: 15 15 15;
+  --color-slate-100: 26 26 26;
+  --color-slate-200: 32 34 35;
+  --color-slate-300: 65 69 73;
+  --color-slate-400: 109 113 117;
+  --color-slate-500: 140 145 150;
+  --color-slate-600: 180 184 190;
+  --color-slate-700: 210 213 216;
+  --color-slate-800: 225 227 229;
+  --color-slate-850: 241 242 244;
+  --color-slate-900: 255 255 255;
+  --color-slate-950: 246 246 247;
+
+  --color-brand-50: 241 248 245;
+  --color-brand-100: 203 244 201;
+  --color-brand-200: 163 234 167;
+  --color-brand-300: 108 214 116;
+  --color-brand-400: 16 128 67;
+  --color-brand-500: 0 128 96;
+  --color-brand-600: 0 110 82;
+  --color-brand-700: 0 91 68;
+  --color-brand-800: 0 74 55;
+  --color-brand-900: 0 46 35;
+  --color-brand-950: 0 31 23;
+
+  --background: #f6f6f7;
+  --foreground: #202223;
+  --card: #ffffff;
+  --card-border: #e1e3e5;
+  --accent: #008060;
+}
+
+/* Theme 7: Midnight OLED (Requested New Night Theme: True Pitch Black & Electric Cyan) */
+html[data-theme='midnight'] {
+  --color-slate-50: 255 255 255;
+  --color-slate-100: 241 245 249;
+  --color-slate-200: 226 232 240;
+  --color-slate-300: 203 213 225;
+  --color-slate-400: 148 163 184;
+  --color-slate-500: 100 116 139;
+  --color-slate-600: 71 85 105;
+  --color-slate-700: 30 41 59;
+  --color-slate-800: 20 26 38;
+  --color-slate-850: 14 18 26;
+  --color-slate-900: 8 10 16;
+  --color-slate-950: 0 0 0;
+
+  --color-brand-50: 236 254 255;
+  --color-brand-100: 207 250 254;
+  --color-brand-200: 165 243 252;
+  --color-brand-300: 103 232 249;
+  --color-brand-400: 34 211 238;
+  --color-brand-500: 6 182 212;
+  --color-brand-600: 8 145 178;
+  --color-brand-700: 14 116 144;
+  --color-brand-800: 21 94 117;
+  --color-brand-900: 22 78 99;
+  --color-brand-950: 8 51 68;
+
+  --background: #000000;
+  --foreground: #f8fafc;
+  --card: #080a10;
+  --card-border: #141b26;
+  --accent: #06b6d4;
+}
+
 body {
   background-color: var(--background);
   color: var(--foreground);
@@ -128,7 +261,186 @@ body {
   transition: background-color 0.3s ease, color 0.3s ease;
 }
 
-/* Glassmorphism utilities */
+/* =========================================================================
+   SPECIALIZED THEME LAYOUT & AESTHETIC OVERRIDES
+   ========================================================================= */
+
+/* --- SHOPIFY POLARIS OVERRIDES (SCREENSHOT 2) --- */
+html[data-theme='shopify'] header {
+  background-color: #1a1a1a !important;
+  border-bottom: 1px solid #2b2b2b !important;
+}
+html[data-theme='shopify'] header .text-white,
+html[data-theme='shopify'] header .text-slate-200,
+html[data-theme='shopify'] header .text-slate-300 {
+  color: #f1f1f1 !important;
+}
+html[data-theme='shopify'] header .text-slate-400 {
+  color: #9ca3af !important;
+}
+html[data-theme='shopify'] header .bg-slate-800,
+html[data-theme='shopify'] header .bg-slate-800\/80,
+html[data-theme='shopify'] header .bg-slate-850\/80 {
+  background-color: #2b2b2b !important;
+  border-color: #3b3b3b !important;
+  color: #f1f1f1 !important;
+}
+html[data-theme='shopify'] aside {
+  background-color: #ebebeb !important;
+  border-right: 1px solid #dcdcdc !important;
+}
+html[data-theme='shopify'] aside .border-slate-800,
+html[data-theme='shopify'] aside .border-b {
+  border-color: #dcdcdc !important;
+}
+html[data-theme='shopify'] aside span.text-white {
+  color: #202223 !important;
+}
+html[data-theme='shopify'] aside nav a:not(.bg-brand-600) {
+  color: #404040 !important;
+}
+html[data-theme='shopify'] aside nav a:not(.bg-brand-600) svg {
+  color: #555555 !important;
+}
+html[data-theme='shopify'] aside nav a:not(.bg-brand-600):hover {
+  background-color: #dfdfdf !important;
+  color: #1a1a1a !important;
+}
+html[data-theme='shopify'] aside nav a.bg-brand-600 {
+  background-color: #ffffff !important;
+  color: #202223 !important;
+  border: 1px solid #d2d5d8 !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08) !important;
+}
+html[data-theme='shopify'] aside nav a.bg-brand-600 * {
+  color: #202223 !important;
+}
+
+/* --- AIDEMY AI OVERRIDES (SCREENSHOT 1) --- */
+html[data-theme='aidemy'] {
+  background-image: 
+    radial-gradient(at 15% 10%, rgba(244, 114, 182, 0.08) 0px, transparent 40%),
+    radial-gradient(at 85% 5%, rgba(168, 85, 247, 0.12) 0px, transparent 40%),
+    radial-gradient(at 50% 60%, rgba(251, 146, 60, 0.04) 0px, transparent 50%),
+    linear-gradient(to right, rgba(233, 213, 255, 0.25) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(233, 213, 255, 0.25) 1px, transparent 1px) !important;
+  background-size: 100% 100%, 100% 100%, 100% 100%, 48px 48px, 48px 48px !important;
+}
+html[data-theme='aidemy'] header {
+  background-color: rgba(255, 255, 255, 0.9) !important;
+  backdrop-filter: blur(16px) !important;
+  border-bottom: 1px solid #ede9fe !important;
+  box-shadow: 0 1px 4px rgba(147, 51, 234, 0.04) !important;
+}
+html[data-theme='aidemy'] aside {
+  background-color: #faf7fc !important;
+  border-right: 1px solid #ede9fe !important;
+}
+html[data-theme='aidemy'] aside .border-b,
+html[data-theme='aidemy'] aside .border-slate-800 {
+  border-color: #ede9fe !important;
+}
+html[data-theme='aidemy'] aside span.text-white {
+  color: #1e1b4b !important;
+}
+html[data-theme='aidemy'] aside nav a:not(.bg-brand-600) {
+  color: #6b7280 !important;
+}
+html[data-theme='aidemy'] aside nav a:not(.bg-brand-600):hover {
+  background-color: #f3e8ff !important;
+  color: #7c3aed !important;
+}
+html[data-theme='aidemy'] aside nav a.bg-brand-600 {
+  background: linear-gradient(135deg, #9333ea, #7c3aed) !important;
+  color: #ffffff !important;
+  box-shadow: 0 4px 14px rgba(124, 58, 237, 0.3) !important;
+}
+html[data-theme='aidemy'] aside nav a.bg-brand-600 * {
+  color: #ffffff !important;
+}
+
+/* --- MIDNIGHT OLED OVERRIDES --- */
+html[data-theme='midnight'] header {
+  background-color: rgba(4, 6, 10, 0.92) !important;
+  border-bottom: 1px solid #141b26 !important;
+}
+html[data-theme='midnight'] aside {
+  background-color: #040609 !important;
+  border-right: 1px solid #141b26 !important;
+}
+html[data-theme='midnight'] aside .border-b,
+html[data-theme='midnight'] aside .border-slate-800 {
+  border-color: #141b26 !important;
+}
+html[data-theme='midnight'] aside nav a.bg-brand-600 {
+  background-color: #0891b2 !important;
+  box-shadow: 0 0 18px rgba(6, 182, 212, 0.35) !important;
+}
+
+/* --- LIGHT MODE TEXT CONTRAST & FORM CONTROLS --- */
+html[data-theme='shopify'] h1.text-white,
+html[data-theme='shopify'] h2.text-white,
+html[data-theme='shopify'] h3.text-white,
+html[data-theme='shopify'] h4.text-white,
+html[data-theme='shopify'] th.text-white,
+html[data-theme='shopify'] td.text-white,
+html[data-theme='shopify'] strong.text-white,
+html[data-theme='shopify'] main span.text-white:not([class*='bg-']):not(button *):not(a *),
+html[data-theme='shopify'] main div.text-white:not([class*='bg-']):not(button *):not(a *),
+html[data-theme='aidemy'] h1.text-white,
+html[data-theme='aidemy'] h2.text-white,
+html[data-theme='aidemy'] h3.text-white,
+html[data-theme='aidemy'] h4.text-white,
+html[data-theme='aidemy'] th.text-white,
+html[data-theme='aidemy'] td.text-white,
+html[data-theme='aidemy'] strong.text-white,
+html[data-theme='aidemy'] main span.text-white:not([class*='bg-']):not(button *):not(a *),
+html[data-theme='aidemy'] main div.text-white:not([class*='bg-']):not(button *):not(a *) {
+  color: #111827 !important;
+}
+
+html[data-theme='shopify'] [role='dialog'] h2.text-white,
+html[data-theme='shopify'] [role='dialog'] h3.text-white,
+html[data-theme='shopify'] [role='dialog'] th.text-white,
+html[data-theme='shopify'] [role='dialog'] td.text-white,
+html[data-theme='shopify'] [role='dialog'] strong.text-white,
+html[data-theme='shopify'] [role='dialog'] span.text-white:not([class*='bg-']):not(button *),
+html[data-theme='aidemy'] [role='dialog'] h2.text-white,
+html[data-theme='aidemy'] [role='dialog'] h3.text-white,
+html[data-theme='aidemy'] [role='dialog'] th.text-white,
+html[data-theme='aidemy'] [role='dialog'] td.text-white,
+html[data-theme='aidemy'] [role='dialog'] strong.text-white,
+html[data-theme='aidemy'] [role='dialog'] span.text-white:not([class*='bg-']):not(button *) {
+  color: #111827 !important;
+}
+
+html[data-theme='shopify'] input:not([type='checkbox']):not([type='radio']),
+html[data-theme='shopify'] select,
+html[data-theme='shopify'] textarea,
+html[data-theme='aidemy'] input:not([type='checkbox']):not([type='radio']),
+html[data-theme='aidemy'] select,
+html[data-theme='aidemy'] textarea {
+  color: #111827 !important;
+  background-color: #ffffff !important;
+  border-color: #d1d5db !important;
+}
+html[data-theme='shopify'] input::placeholder,
+html[data-theme='shopify'] textarea::placeholder,
+html[data-theme='aidemy'] input::placeholder,
+html[data-theme='aidemy'] textarea::placeholder {
+  color: #9ca3af !important;
+}
+
+html[data-theme='shopify'] .glass-panel,
+html[data-theme='shopify'] .glass-card,
+html[data-theme='aidemy'] .glass-panel,
+html[data-theme='aidemy'] .glass-card {
+  background: rgba(255, 255, 255, 0.95) !important;
+  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04) !important;
+}
+
+/* Glassmorphism utilities for dark modes */
 .glass-panel {
   background: rgba(var(--color-slate-900), 0.75);
   backdrop-filter: blur(12px);

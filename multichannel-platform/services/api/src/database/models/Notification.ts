@@ -1,5 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
-import { NotificationSeverity, NotificationCategory } from '@multichannel/shared';
+import { NotificationSeverity, NotificationCategory, ChannelType } from '@multichannel/shared';
 
 export interface INotificationDocument extends Document {
   organizationId: mongoose.Types.ObjectId;
@@ -7,6 +7,7 @@ export interface INotificationDocument extends Document {
   message: string;
   severity: NotificationSeverity;
   category: NotificationCategory;
+  channelType?: ChannelType;
   isRead: boolean;
   link?: string;
   createdAt: Date;
@@ -38,6 +39,11 @@ const NotificationSchema = new Schema<INotificationDocument>(
       type: String,
       enum: Object.values(NotificationCategory),
       default: NotificationCategory.SYSTEM,
+      index: true,
+    },
+    channelType: {
+      type: String,
+      enum: Object.values(ChannelType),
       index: true,
     },
     isRead: {

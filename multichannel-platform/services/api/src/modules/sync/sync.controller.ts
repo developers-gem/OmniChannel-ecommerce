@@ -26,6 +26,7 @@ import { decryptSecret } from '../../utils/crypto';
 import { logger } from '../../utils/logger';
 import { ShopifyService } from '../../services/shopify.service';
 import { EbayService } from '../../services/ebay.service';
+import { NotificationService } from '../../services/notification.service';
 
 export class SyncController {
   // GET /api/v1/sync/jobs - List synchronization jobs and status
@@ -149,6 +150,15 @@ export class SyncController {
                   conn.lastSyncAt = new Date();
                   await conn.save();
                   logger.info(`Successfully imported ${syncedCount} Shopify products from ${domain}`);
+
+                  if (syncedCount > 0) {
+                    await NotificationService.notifyProductImported({
+                      organizationId: req.tenantId,
+                      channelName: conn.name,
+                      channelType: ChannelType.SHOPIFY,
+                      count: syncedCount,
+                    });
+                  }
                 } catch (fetchErr: any) {
                   logger.error(`Failed to fetch Shopify products for ${conn.name}: ${fetchErr.message}`);
                 }
@@ -182,6 +192,15 @@ export class SyncController {
                   conn.lastSyncAt = new Date();
                   await conn.save();
                   logger.info(`Successfully imported ${syncedCount} eBay products for ${conn.name}`);
+
+                  if (syncedCount > 0) {
+                    await NotificationService.notifyProductImported({
+                      organizationId: req.tenantId,
+                      channelName: conn.name,
+                      channelType: ChannelType.EBAY,
+                      count: syncedCount,
+                    });
+                  }
                 } catch (ebayErr: any) {
                   logger.error(`Failed to fetch eBay products for ${conn.name}: ${ebayErr.message}`);
                 }

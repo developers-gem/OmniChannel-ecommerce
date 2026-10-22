@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-export type ThemeId = 'emerald' | 'sapphire' | 'amethyst' | 'amber';
+export type ThemeId = 'emerald' | 'sapphire' | 'amethyst' | 'amber' | 'aidemy' | 'shopify' | 'midnight';
 
 export interface ThemeOption {
   id: ThemeId;
@@ -9,6 +9,7 @@ export interface ThemeOption {
   badge: string;
   description: string;
   accentHex: string;
+  isLight?: boolean;
   previewColors: {
     bg: string;
     card: string;
@@ -74,6 +75,50 @@ export const THEMES: ThemeOption[] = [
       border: '#362c23',
     },
   },
+  {
+    id: 'aidemy',
+    name: 'Aidemy AI',
+    tagline: 'Modern Light • Lavender & Amber Glow',
+    badge: 'Featured AI',
+    description: 'Crisp light canvas with radiant violet, lavender aura, and warm sunset amber accents from the Aidemy design.',
+    accentHex: '#9333ea',
+    isLight: true,
+    previewColors: {
+      bg: '#fbf9fd',
+      card: '#ffffff',
+      primary: '#9333ea',
+      border: '#e9d5ff',
+    },
+  },
+  {
+    id: 'shopify',
+    name: 'Shopify Polaris',
+    tagline: 'Clean Commerce • Official Polaris Admin',
+    badge: 'Merchant Pro',
+    description: 'Iconic Shopify admin palette with a dark header bar, light grey sidebar, pure white cards, and Polaris green accents.',
+    accentHex: '#008060',
+    isLight: true,
+    previewColors: {
+      bg: '#f6f6f7',
+      card: '#ffffff',
+      primary: '#008060',
+      border: '#e1e3e5',
+    },
+  },
+  {
+    id: 'midnight',
+    name: 'Midnight OLED',
+    tagline: 'Ultra Night • True Pitch Black & Cyan',
+    badge: 'Deep Night',
+    description: 'True pitch black OLED canvas for zero eye fatigue and infinite contrast, paired with electric cyber cyan neon.',
+    accentHex: '#06b6d4',
+    previewColors: {
+      bg: '#000000',
+      card: '#080a0e',
+      primary: '#06b6d4',
+      border: '#181e28',
+    },
+  },
 ];
 
 interface ThemeState {
@@ -82,19 +127,31 @@ interface ThemeState {
   initializeTheme: () => void;
 }
 
+const applyThemeToDOM = (theme: ThemeId) => {
+  if (typeof document === 'undefined') return;
+  document.documentElement.setAttribute('data-theme', theme);
+  if (theme === 'aidemy' || theme === 'shopify') {
+    document.documentElement.classList.remove('dark');
+    document.documentElement.classList.add('light');
+  } else {
+    document.documentElement.classList.remove('light');
+    document.documentElement.classList.add('dark');
+  }
+};
+
 export const useThemeStore = create<ThemeState>((set) => ({
   theme: 'emerald',
   setTheme: (theme) => {
     if (typeof window !== 'undefined') {
       localStorage.setItem('omnichannel_theme', theme);
-      document.documentElement.setAttribute('data-theme', theme);
+      applyThemeToDOM(theme);
     }
     set({ theme });
   },
   initializeTheme: () => {
     if (typeof window !== 'undefined') {
       const saved = (localStorage.getItem('omnichannel_theme') as ThemeId) || 'emerald';
-      document.documentElement.setAttribute('data-theme', saved);
+      applyThemeToDOM(saved);
       set({ theme: saved });
     }
   },

@@ -190,10 +190,10 @@ export default function SettingsPage() {
                           className="w-2.5 h-2.5 rounded-md"
                           style={{ backgroundColor: theme.previewColors.primary }}
                         ></span>
-                        <span className="text-[10px] font-semibold text-white/90">OmniChannel</span>
+                        <span className={`text-[10px] font-semibold ${theme.isLight ? 'text-slate-800' : 'text-white/90'}`}>OmniChannel</span>
                       </div>
                       <div className="flex items-center gap-1">
-                        <span className="w-1.5 h-1.5 rounded-full bg-white/40"></span>
+                        <span className={`w-1.5 h-1.5 rounded-full ${theme.isLight ? 'bg-slate-400' : 'bg-white/40'}`}></span>
                         <span
                           className="w-1.5 h-1.5 rounded-full"
                           style={{ backgroundColor: theme.previewColors.primary }}
@@ -210,7 +210,7 @@ export default function SettingsPage() {
                           borderColor: theme.previewColors.border,
                         }}
                       >
-                        <div className="w-5 h-1 bg-white/20 rounded"></div>
+                        <div className={`w-5 h-1 rounded ${theme.isLight ? 'bg-slate-300' : 'bg-white/20'}`}></div>
                         <div
                           className="w-8 h-2 rounded mt-1"
                           style={{ backgroundColor: theme.previewColors.primary }}
@@ -223,8 +223,8 @@ export default function SettingsPage() {
                           borderColor: theme.previewColors.border,
                         }}
                       >
-                        <div className="w-6 h-1 bg-white/20 rounded"></div>
-                        <div className="w-5 h-2 bg-white/40 rounded mt-1"></div>
+                        <div className={`w-6 h-1 rounded ${theme.isLight ? 'bg-slate-300' : 'bg-white/20'}`}></div>
+                        <div className={`w-5 h-2 rounded mt-1 ${theme.isLight ? 'bg-slate-400' : 'bg-white/40'}`}></div>
                       </div>
                       <div
                         className="rounded-lg p-1.5 border"
@@ -233,8 +233,8 @@ export default function SettingsPage() {
                           borderColor: theme.previewColors.border,
                         }}
                       >
-                        <div className="w-4 h-1 bg-white/20 rounded"></div>
-                        <div className="w-7 h-2 bg-white/30 rounded mt-1"></div>
+                        <div className={`w-4 h-1 rounded ${theme.isLight ? 'bg-slate-300' : 'bg-white/20'}`}></div>
+                        <div className={`w-7 h-2 rounded mt-1 ${theme.isLight ? 'bg-slate-300' : 'bg-white/30'}`}></div>
                       </div>
                     </div>
                   </div>

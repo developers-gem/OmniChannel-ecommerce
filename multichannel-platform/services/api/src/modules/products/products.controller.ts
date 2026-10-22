@@ -24,6 +24,7 @@ import { runInTransaction } from '../../database';
 import { logger } from '../../utils/logger';
 import { ShopifyService } from '../../services/shopify.service';
 import { EbayService } from '../../services/ebay.service';
+import { NotificationService } from '../../services/notification.service';
 
 export class ProductsController {
   // GET /api/v1/products - List canonical products with pagination, search, and variant count
@@ -401,6 +402,14 @@ export class ProductsController {
           error: { message: 'Product not found', code: 'NOT_FOUND' },
         });
       }
+
+      await NotificationService.notifyProductModified({
+        organizationId: req.tenantId,
+        productTitle: product.title,
+        source: 'Platform Catalog Editor',
+        changesSummary: `Updated status: ${product.status}, default retail price: $${product.defaultRetailPrice}.`,
+        link: '/products',
+      });
 
       return res.json({
         success: true,
@@ -968,6 +977,16 @@ export class ProductsController {
         });
       }
 
+      for (const resItem of results.filter((r) => r.status === 'SUCCESS')) {
+        await NotificationService.notifyProductUploaded({
+          organizationId: req.tenantId,
+          productTitle: product.title,
+          channelName: resItem.channelName,
+          channelType: resItem.channelType,
+          sku: product.masterSku,
+        });
+      }
+
       return res.json({
         success: true,
         data: {
@@ -1083,6 +1102,16 @@ export class ProductsController {
             error: err.message || 'Publishing failed',
           });
         }
+      }
+
+      if (successfulCount > 0) {
+        await NotificationService.notifyProductUploaded({
+          organizationId: req.tenantId,
+          productTitle: `${successfulCount} Products`,
+          channelName: 'Connected Channels',
+          channelType: ChannelType.CUSTOM_STORE,
+          count: successfulCount,
+        });
       }
 
       return res.json({
