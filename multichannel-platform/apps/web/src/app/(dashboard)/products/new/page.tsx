@@ -215,7 +215,13 @@ export default function AddProductPage() {
     if (!validateForm()) return;
     try {
       setIsSubmittingOnly(true);
-      const payload = { ...formData, variants };
+      const cleanVariants = variants.map((v) => ({
+        ...v,
+        retailPrice: typeof v.retailPrice === 'number' && !isNaN(v.retailPrice) && v.retailPrice >= 0 ? v.retailPrice : 0,
+        costPrice: typeof v.costPrice === 'number' && !isNaN(v.costPrice) && v.costPrice >= 0 ? v.costPrice : 0,
+        initialStock: typeof v.initialStock === 'number' && !isNaN(v.initialStock) && v.initialStock >= 0 ? Math.floor(v.initialStock) : 0,
+      }));
+      const payload = { ...formData, variants: cleanVariants };
       await api.post('/products', payload);
       queryClient.invalidateQueries({ queryKey: ['canonical-products'] });
       queryClient.invalidateQueries({ queryKey: ['product-mappings'] });
@@ -261,7 +267,13 @@ export default function AddProductPage() {
 
     try {
       // Step 1: Create Canonical Product & Variants
-      const payload = { ...formData, variants };
+      const cleanVariants = variants.map((v) => ({
+        ...v,
+        retailPrice: typeof v.retailPrice === 'number' && !isNaN(v.retailPrice) && v.retailPrice >= 0 ? v.retailPrice : 0,
+        costPrice: typeof v.costPrice === 'number' && !isNaN(v.costPrice) && v.costPrice >= 0 ? v.costPrice : 0,
+        initialStock: typeof v.initialStock === 'number' && !isNaN(v.initialStock) && v.initialStock >= 0 ? Math.floor(v.initialStock) : 0,
+      }));
+      const payload = { ...formData, variants: cleanVariants };
       const createRes: any = await api.post('/products', payload);
       const created = createRes.data;
 
@@ -512,9 +524,13 @@ export default function AddProductPage() {
                   <input
                     type="number"
                     step="0.01"
+                    min="0"
                     required
-                    value={v.retailPrice}
-                    onChange={(e) => updateVariant(idx, 'retailPrice', parseFloat(e.target.value))}
+                    value={isNaN(v.retailPrice) ? '' : v.retailPrice}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value);
+                      updateVariant(idx, 'retailPrice', isNaN(val) ? 0 : val);
+                    }}
                     className="mt-1 w-full px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-white text-xs outline-none"
                   />
                 </div>
@@ -525,9 +541,13 @@ export default function AddProductPage() {
                   </label>
                   <input
                     type="number"
+                    min="0"
                     required
-                    value={v.initialStock}
-                    onChange={(e) => updateVariant(idx, 'initialStock', parseInt(e.target.value, 10))}
+                    value={isNaN(v.initialStock) ? '' : v.initialStock}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value, 10);
+                      updateVariant(idx, 'initialStock', isNaN(val) ? 0 : Math.max(0, val));
+                    }}
                     className="mt-1 w-full px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-white text-xs font-mono outline-none"
                   />
                 </div>

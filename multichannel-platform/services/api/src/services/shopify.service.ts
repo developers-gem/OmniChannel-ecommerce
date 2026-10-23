@@ -1,6 +1,22 @@
 import axios from 'axios';
 import { decryptSecret } from '../utils/crypto';
 import { logger } from '../utils/logger';
+import {
+  CanonicalProduct,
+  ProductVariant,
+  InventoryItem,
+  ChannelProduct,
+  ProductMapping,
+} from '../database/models';
+import {
+  ProductStatus,
+  ChannelType,
+  ChannelProductStatus,
+  SyncStatus,
+  MappingConfidence,
+  MappingStatus,
+} from '@multichannel/shared';
+import { NotificationService } from './notification.service';
 
 export interface ShopifyCredentials {
   domain: string;
@@ -195,23 +211,48 @@ export class ShopifyService {
     const client = this.getClient(domain, token);
 
     // Format variants for Shopify REST API
-    const shopifyVariants = product.variants.map((v, idx) => ({
-      title: v.title || (product.variants.length === 1 ? 'Default Title' : `Variant ${idx + 1}`),
-      sku: v.sku,
-      barcode: v.barcode || undefined,
-      price: (v.retailPrice || 0).toFixed(2),
-      compare_at_price: v.compareAtPrice ? v.compareAtPrice.toFixed(2) : undefined,
-      inventory_management: 'shopify',
-      weight: v.weight || undefined,
-    }));
+    const isSingleVariant = product.variants.length === 1;
+    const shopifyVariants = product.variants.map((v, idx) => {
+      const optionVal =
+        v.title && v.title.trim()
+          ? v.title.trim()
+          : isSingleVariant
+          ? 'Default Title'
+          : `Variant ${idx + 1}`;
+
+      const item: any = {
+        option1: optionVal,
+        sku: (v.sku && v.sku.trim()) || `SKU-${Date.now()}-${idx + 1}`,
+        price: typeof v.retailPrice === 'number' && !isNaN(v.retailPrice) ? v.retailPrice.toFixed(2) : '0.00',
+        inventory_management: 'shopify',
+      };
+
+      if (v.barcode && v.barcode.trim()) {
+        item.barcode = v.barcode.trim();
+      }
+      if (typeof v.compareAtPrice === 'number' && v.compareAtPrice > 0 && !isNaN(v.compareAtPrice)) {
+        item.compare_at_price = v.compareAtPrice.toFixed(2);
+      }
+      if (typeof v.weight === 'number' && v.weight > 0 && !isNaN(v.weight)) {
+        item.weight = v.weight;
+      }
+
+      return item;
+    });
 
     const payload: any = {
       product: {
-        title: product.title,
+        title: product.title || 'Untitled Product',
         body_html: product.description || '',
         vendor: product.brand || '',
         product_type: product.category || '',
-        tags: product.tags ? product.tags.join(', ') : '',
+        tags: product.tags && product.tags.length > 0 ? product.tags.join(', ') : '',
+        options: [
+          {
+            name: isSingleVariant ? 'Title' : 'Option',
+            values: shopifyVariants.map((v) => v.option1),
+          },
+        ],
         variants: shopifyVariants,
       },
     };
@@ -221,9 +262,22 @@ export class ShopifyService {
     }
 
     logger.info(`Publishing product "${product.title}" to Shopify store ${domain}...`);
-    const res = await client.post('/products.json', payload);
-    const createdProduct = res.data?.product;
+    let res: any;
+    try {
+      res = await client.post('/products.json', payload);
+    } catch (apiErr: any) {
+      const rawErrors = apiErr.response?.data?.errors;
+      const errorMsg =
+        typeof rawErrors === 'string'
+          ? rawErrors
+          : typeof rawErrors === 'object'
+          ? JSON.stringify(rawErrors)
+          : apiErr.response?.data?.message || apiErr.message || 'Product creation failed';
+      logger.error(`Shopify product creation failed on ${domain}: ${errorMsg}`);
+      throw new Error(`Shopify API error: ${errorMsg}`);
+    }
 
+    const createdProduct = res.data?.product;
     if (!createdProduct || !createdProduct.id) {
       throw new Error('Shopify returned an empty product creation response');
     }
@@ -235,7 +289,11 @@ export class ShopifyService {
       const srcVariant = product.variants[i];
       const createdVariant = createdProduct.variants?.[i];
 
-      if (createdVariant?.inventory_item_id && typeof srcVariant.stockQuantity === 'number') {
+      if (
+        createdVariant?.inventory_item_id &&
+        typeof srcVariant.stockQuantity === 'number' &&
+        srcVariant.stockQuantity > 0
+      ) {
         try {
           await this.setInventoryLevel(
             domain,
@@ -274,5 +332,220 @@ export class ShopifyService {
       );
       return false;
     }
+  }
+
+  /**
+   * Register essential webhooks on a Shopify store
+   */
+  static async registerWebhooks(domain: string, token: string, connectionId: string): Promise<void> {
+    try {
+      const client = this.getClient(domain, token);
+      const apiBase = (process.env.API_BASE_URL || 'http://localhost:5050').replace(/\/$/, '');
+
+      // Shopify only delivers webhooks to https endpoints (or localhost during dev)
+      if (!apiBase.startsWith('https://') && !apiBase.includes('localhost')) {
+        logger.warn(`Skipping Shopify webhook registration: API_BASE_URL is not HTTPS (${apiBase})`);
+        return;
+      }
+
+      const webhookUrl = `${apiBase}/api/v1/webhooks/shopify/${connectionId}`;
+      const topics = [
+        'products/create',
+        'products/update',
+        'products/delete',
+        'inventory_levels/update',
+        'orders/create',
+      ];
+
+      for (const topic of topics) {
+        try {
+          await client.post('/webhooks.json', {
+            webhook: {
+              topic,
+              address: webhookUrl,
+              format: 'json',
+            },
+          });
+          logger.info(`Registered Shopify webhook [${topic}] -> ${webhookUrl}`);
+        } catch (regErr: any) {
+          if (regErr.response?.status === 422) {
+            logger.debug(`Shopify webhook [${topic}] already registered.`);
+          } else {
+            logger.warn(
+              `Could not register Shopify webhook [${topic}]: ${regErr.response?.data?.errors ? JSON.stringify(regErr.response.data.errors) : regErr.message}`
+            );
+          }
+        }
+      }
+    } catch (err: any) {
+      logger.warn(`Failed during Shopify webhook registration: ${err.message}`);
+    }
+  }
+
+  /**
+   * Ingest a product from Shopify into ChannelProduct, CanonicalProduct, ProductVariant, and ProductMapping
+   */
+  static async ingestShopifyProduct(params: {
+    organizationId: any;
+    connection: any;
+    shopifyProduct: any;
+  }): Promise<{ canonicalProductId: any; mappedCount: number }> {
+    const { organizationId, connection, shopifyProduct } = params;
+    const productId = String(shopifyProduct.id);
+    const variants = Array.isArray(shopifyProduct.variants) ? shopifyProduct.variants : [];
+
+    let mappedCount = 0;
+    let canonicalProduct: any = null;
+
+    // Check if canonical product already exists for this master SKU
+    const primarySku = (variants[0]?.sku && variants[0].sku.trim()) || `SHOPIFY-${productId}`;
+    const cleanPrimarySku = primarySku.toUpperCase();
+
+    // 1. Try to find existing canonical product by SKU or title
+    const existingVariant = await ProductVariant.findOne({
+      organizationId,
+      sku: cleanPrimarySku,
+    });
+
+    if (existingVariant) {
+      canonicalProduct = await CanonicalProduct.findOne({
+        _id: existingVariant.canonicalProductId,
+        organizationId,
+      });
+    }
+
+    if (!canonicalProduct) {
+      canonicalProduct = await CanonicalProduct.findOne({
+        organizationId,
+        $or: [
+          { masterSku: cleanPrimarySku },
+          { title: { $regex: `^${shopifyProduct.title.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } },
+        ],
+      });
+    }
+
+    // 2. Create Canonical Product if it doesn't exist
+    if (!canonicalProduct) {
+      const images = (shopifyProduct.images || []).map((img: any, idx: number) => ({
+        url: typeof img === 'string' ? img : img.src,
+        altText: typeof img === 'object' ? img.alt : '',
+        position: idx + 1,
+        isPrimary: idx === 0,
+      }));
+
+      const tags = typeof shopifyProduct.tags === 'string'
+        ? shopifyProduct.tags.split(',').map((t: string) => t.trim()).filter(Boolean)
+        : Array.isArray(shopifyProduct.tags)
+        ? shopifyProduct.tags
+        : [];
+
+      canonicalProduct = await CanonicalProduct.create({
+        organizationId,
+        masterSku: cleanPrimarySku,
+        title: shopifyProduct.title || 'Untitled Product',
+        description: shopifyProduct.body_html || '',
+        brand: shopifyProduct.vendor || '',
+        category: shopifyProduct.product_type || 'General',
+        tags,
+        images,
+        status: ProductStatus.ACTIVE,
+        defaultRetailPrice: parseFloat(variants[0]?.price) || 0,
+        defaultCostPrice: 0,
+        totalVariants: variants.length || 1,
+      });
+      logger.info(`Auto-created Canonical Product "${canonicalProduct.title}" (SKU: ${cleanPrimarySku}) from Shopify`);
+    }
+
+    // 3. Process each variant
+    for (let idx = 0; idx < variants.length; idx++) {
+      const v = variants[idx];
+      const variantId = String(v.id);
+      const price = parseFloat(v.price) || 0;
+      const qty = typeof v.inventory_quantity === 'number' ? v.inventory_quantity : 0;
+      const vSku = ((v.sku && v.sku.trim()) || `SHOPIFY-${v.id}`).toUpperCase();
+
+      // Upsert ChannelProduct
+      const channelProd = await ChannelProduct.findOneAndUpdate(
+        {
+          organizationId,
+          channelConnectionId: connection._id,
+          externalProductId: productId,
+          externalVariantId: variantId,
+        },
+        {
+          channelType: ChannelType.SHOPIFY,
+          title: `${shopifyProduct.title}${variants.length > 1 && v.title && v.title !== 'Default Title' ? ` - ${v.title}` : ''}`,
+          sku: vSku,
+          barcode: v.barcode || '',
+          price,
+          inventoryQuantity: qty,
+          status: ChannelProductStatus.ACTIVE,
+          syncStatus: SyncStatus.SYNCED,
+          lastSyncedAt: new Date(),
+          rawPayload: { product: shopifyProduct, variant: v },
+        },
+        { upsert: true, new: true }
+      );
+
+      // Upsert ProductVariant on CanonicalProduct
+      let canonicalVariant = await ProductVariant.findOne({
+        organizationId,
+        canonicalProductId: canonicalProduct._id,
+        sku: vSku,
+      });
+
+      if (!canonicalVariant) {
+        canonicalVariant = await ProductVariant.create({
+          organizationId,
+          canonicalProductId: canonicalProduct._id,
+          sku: vSku,
+          title: v.title && v.title !== 'Default Title' ? v.title : canonicalProduct.title,
+          barcode: v.barcode || '',
+          options: [{ name: 'Title', value: v.title || 'Default Title' }],
+          retailPrice: price,
+          costPrice: 0,
+          weight: typeof v.weight === 'number' ? v.weight : 0,
+        });
+      }
+
+      // Upsert InventoryItem
+      await InventoryItem.findOneAndUpdate(
+        {
+          organizationId,
+          canonicalVariantId: canonicalVariant._id,
+        },
+        {
+          sku: canonicalVariant.sku,
+          trackedStock: qty,
+          availableToAllocate: Math.max(0, qty),
+          reorderPoint: 5,
+        },
+        { upsert: true, new: true }
+      );
+
+      // Create / update ProductMapping
+      await ProductMapping.findOneAndUpdate(
+        {
+          organizationId,
+          channelProductId: channelProd._id,
+        },
+        {
+          canonicalProductId: canonicalProduct._id,
+          canonicalVariantId: canonicalVariant._id,
+          channelConnectionId: connection._id,
+          channelProductId: channelProd._id,
+          channelType: ChannelType.SHOPIFY,
+          mappingConfidence: MappingConfidence.EXACT_SKU,
+          syncPrice: true,
+          syncInventory: true,
+          status: MappingStatus.MAPPED,
+        },
+        { upsert: true, new: true }
+      );
+
+      mappedCount++;
+    }
+
+    return { canonicalProductId: canonicalProduct._id, mappedCount };
   }
 }

@@ -23,6 +23,7 @@ import {
 import { decryptSecret } from '../../utils/crypto';
 import { logger } from '../../utils/logger';
 import { NotificationService } from '../../services/notification.service';
+import { ShopifyService } from '../../services/shopify.service';
 
 export class WebhooksController {
   /**
@@ -378,32 +379,11 @@ export class WebhooksController {
       const productId = String(payload.id);
       if (!productId || !Array.isArray(payload.variants)) return;
 
-      for (const v of payload.variants) {
-        const variantId = String(v.id);
-        const price = parseFloat(v.price) || 0;
-        const qty = v.inventory_quantity || 0;
-
-        await ChannelProduct.findOneAndUpdate(
-          {
-            organizationId: connection.organizationId,
-            channelConnectionId: connection._id,
-            externalProductId: productId,
-            externalVariantId: variantId,
-          },
-          {
-            title: `${payload.title}${payload.variants.length > 1 ? ` - ${v.title}` : ''}`,
-            sku: (v.sku && v.sku.trim()) || `SHOPIFY-${v.id}`,
-            barcode: v.barcode || '',
-            price,
-            inventoryQuantity: qty,
-            status: ChannelProductStatus.ACTIVE,
-            syncStatus: SyncStatus.SYNCED,
-            lastSyncedAt: new Date(),
-            rawPayload: { product: payload, variant: v },
-          },
-          { upsert: true, new: true }
-        );
-      }
+      const { mappedCount } = await ShopifyService.ingestShopifyProduct({
+        organizationId: connection.organizationId,
+        connection,
+        shopifyProduct: payload,
+      });
 
       await NotificationService.notifyProductUploaded({
         organizationId: connection.organizationId,
@@ -413,7 +393,9 @@ export class WebhooksController {
         sku: payload.variants[0]?.sku,
       });
 
-      logger.info(`Processed new Shopify product ${productId} from products/create webhook`);
+      logger.info(
+        `Processed new Shopify product ${productId} from products/create webhook (${mappedCount} variants ingested & mapped)`
+      );
     } catch (err: any) {
       logger.error('Failed to process Shopify product create webhook:', err);
     }
@@ -424,35 +406,18 @@ export class WebhooksController {
       const productId = String(payload.id);
       if (!productId || !Array.isArray(payload.variants)) return;
 
-      for (const v of payload.variants) {
-        const variantId = String(v.id);
-        const price = parseFloat(v.price) || 0;
-        const qty = v.inventory_quantity || 0;
-
-        await ChannelProduct.findOneAndUpdate(
-          {
-            organizationId: connection.organizationId,
-            channelConnectionId: connection._id,
-            externalProductId: productId,
-            externalVariantId: variantId,
-          },
-          {
-            title: `${payload.title} - ${v.title}`,
-            sku: (v.sku && v.sku.trim()) || `SHOPIFY-${v.id}`,
-            price,
-            inventoryQuantity: qty,
-            lastSyncedAt: new Date(),
-            rawPayload: { product: payload, variant: v },
-          }
-        );
-      }
+      await ShopifyService.ingestShopifyProduct({
+        organizationId: connection.organizationId,
+        connection,
+        shopifyProduct: payload,
+      });
 
       await NotificationService.notifyProductModified({
         organizationId: connection.organizationId,
         productTitle: payload.title || `Product #${productId}`,
         source: `Shopify (${connection.name || 'Store'})`,
         channelType: ChannelType.SHOPIFY,
-        changesSummary: `Updated variants and channel listing data.`,
+        changesSummary: `Updated variants and catalog mapping data.`,
         link: '/mappings',
       });
 

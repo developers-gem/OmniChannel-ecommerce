@@ -122,31 +122,19 @@ export class SyncController {
                   const products = shopRes.data?.products || [];
 
                   for (const prod of products) {
-                    for (const variant of prod.variants || []) {
-                      await ChannelProduct.findOneAndUpdate(
-                        {
-                          organizationId: req.tenantId,
-                          channelConnectionId: conn._id,
-                          externalProductId: String(prod.id),
-                          externalVariantId: String(variant.id),
-                        },
-                        {
-                          channelType: ChannelType.SHOPIFY,
-                          title: prod.title + (variant.title && variant.title !== 'Default Title' ? ` - ${variant.title}` : ''),
-                          sku: (variant.sku && variant.sku.trim()) || `SHOPIFY-${variant.id}`,
-                          barcode: variant.barcode || '',
-                          price: parseFloat(variant.price) || 0,
-                          inventoryQuantity: variant.inventory_quantity || 0,
-                          status: ChannelProductStatus.ACTIVE,
-                          syncStatus: SyncStatus.SYNCED,
-                          lastSyncedAt: new Date(),
-                          rawPayload: { product: prod, variant },
-                        },
-                        { upsert: true, new: true }
-                      );
-                      syncedCount++;
-                    }
+                    const { mappedCount } = await ShopifyService.ingestShopifyProduct({
+                      organizationId: req.tenantId,
+                      connection: conn,
+                      shopifyProduct: prod,
+                    });
+                    syncedCount += mappedCount;
                   }
+
+                  // Auto-register webhooks for real-time updates
+                  ShopifyService.registerWebhooks(domain, token, conn._id.toString()).catch((e) =>
+                    logger.warn(`Could not register webhooks during sync: ${e.message}`)
+                  );
+
                   conn.lastSyncAt = new Date();
                   await conn.save();
                   logger.info(`Successfully imported ${syncedCount} Shopify products from ${domain}`);

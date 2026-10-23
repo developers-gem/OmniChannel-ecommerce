@@ -846,13 +846,25 @@ export class ProductsController {
               mappingsCount: createdMappings.length,
             });
           } catch (pubErr: any) {
-            logger.error(`Failed to publish product ${product.masterSku} to ${conn.name}:`, pubErr);
+            const rawErrors = pubErr.response?.data?.errors;
+            let errorMsg = pubErr.message || 'Publishing failed';
+            if (rawErrors) {
+              if (typeof rawErrors === 'string') {
+                errorMsg = rawErrors;
+              } else if (typeof rawErrors === 'object') {
+                errorMsg = JSON.stringify(rawErrors);
+              }
+            } else if (pubErr.response?.data?.message) {
+              errorMsg = pubErr.response.data.message;
+            }
+
+            logger.error(`Failed to publish product ${product.masterSku} to ${conn.name}: ${errorMsg}`);
             results.push({
               channelId: conn._id,
               channelName: conn.name,
               channelType: conn.channelType,
               status: 'FAILED',
-              error: pubErr.response?.data?.errors || pubErr.message,
+              error: errorMsg,
             });
           }
         } else if (conn.channelType === ChannelType.EBAY) {
@@ -953,13 +965,25 @@ export class ProductsController {
               mappingsCount: createdMappings.length,
             });
           } catch (pubErr: any) {
-            logger.error(`Failed to publish product ${product.masterSku} to ${conn.name}:`, pubErr);
+            const rawErrors = pubErr.response?.data?.errors;
+            let errorMsg = pubErr.message || 'Publishing failed';
+            if (rawErrors) {
+              if (typeof rawErrors === 'string') {
+                errorMsg = rawErrors;
+              } else if (typeof rawErrors === 'object') {
+                errorMsg = JSON.stringify(rawErrors);
+              }
+            } else if (pubErr.response?.data?.message) {
+              errorMsg = pubErr.response.data.message;
+            }
+
+            logger.error(`Failed to publish product ${product.masterSku} to ${conn.name}: ${errorMsg}`);
             results.push({
               channelId: conn._id,
               channelName: conn.name,
               channelType: conn.channelType,
               status: 'FAILED',
-              error: pubErr.response?.data?.errors || pubErr.message,
+              error: errorMsg,
             });
           }
         }
@@ -1001,10 +1025,10 @@ export class ProductsController {
         },
       });
     } catch (error: any) {
-      logger.error('Failed to publish product:', error);
+      logger.error('Failed to publish product:', error?.message || String(error));
       return res.status(500).json({
         success: false,
-        error: { message: error.message || 'Failed to publish product' },
+        error: { message: error?.message || 'Failed to publish product' },
       });
     }
   }

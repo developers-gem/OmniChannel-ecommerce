@@ -7,6 +7,7 @@ import { encryptSecret, decryptSecret, redactSecrets } from '../../utils/crypto'
 import { validateSafeUrl } from '../../utils/ssrf';
 import { logger } from '../../utils/logger';
 import { EbayService } from '../../services/ebay.service';
+import { ShopifyService } from '../../services/shopify.service';
 import { config } from '../../config';
 
 export class ChannelsController {
@@ -253,6 +254,37 @@ export class ChannelsController {
       });
 
       logger.info(`Channel connection established: ${name} (${channelType}) for tenant ${req.tenantId}`);
+
+      if (channelType === ChannelType.SHOPIFY) {
+        try {
+          const { domain, token } = ShopifyService.getCredentials(connection);
+          // Auto-register webhooks asynchronously
+          ShopifyService.registerWebhooks(domain, token, connection._id.toString()).catch((err) =>
+            logger.warn(`Could not auto-register Shopify webhooks for ${domain}: ${err.message}`)
+          );
+
+          // Initial catalog import in background
+          (async () => {
+            try {
+              const client = ShopifyService.getClient(domain, token);
+              const shopRes = await client.get('/products.json?limit=250');
+              const products = shopRes.data?.products || [];
+              for (const prod of products) {
+                await ShopifyService.ingestShopifyProduct({
+                  organizationId: req.tenantId,
+                  connection,
+                  shopifyProduct: prod,
+                });
+              }
+              logger.info(`Initial catalog auto-import finished for ${domain}: ${products.length} products`);
+            } catch (impErr: any) {
+              logger.warn(`Initial catalog import failed for ${domain}: ${impErr.message}`);
+            }
+          })();
+        } catch (initErr: any) {
+          logger.warn(`Could not start Shopify background initialization: ${initErr.message}`);
+        }
+      }
 
       const connObj = connection.toObject();
       const idStr = connection._id.toString();
