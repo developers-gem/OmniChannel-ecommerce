@@ -53,9 +53,45 @@ export class ShopifyService {
         'X-Shopify-Access-Token': token,
         'Content-Type': 'application/json',
       },
-      timeout: 20000,
+      timeout: 25000,
     });
   }
+
+  /**
+   * Fetch ALL products from a Shopify store using cursor-based pagination (Link header)
+   */
+  static async fetchAllProducts(domain: string, token: string): Promise<any[]> {
+    const client = this.getClient(domain, token);
+    const allProducts: any[] = [];
+    let nextUrl: string | null = '/products.json?limit=250';
+    let pageCount = 0;
+
+    while (nextUrl) {
+      pageCount++;
+      logger.info(`[ShopifyService] Fetching products page ${pageCount} from ${domain} (${nextUrl})`);
+      const res: any = await client.get(nextUrl);
+      const prods: any[] = res.data?.products || [];
+      allProducts.push(...prods);
+
+      const linkHeader: any = res.headers?.['link'] || res.headers?.['Link'];
+      nextUrl = null;
+
+      if (linkHeader && typeof linkHeader === 'string') {
+        const links: string[] = linkHeader.split(',');
+        for (const link of links) {
+          const match: RegExpMatchArray | null = link.match(/<([^>]+)>;\s*rel="([^"]+)"/);
+          if (match && match[2] === 'next') {
+            nextUrl = match[1];
+            break;
+          }
+        }
+      }
+    }
+
+    logger.info(`[ShopifyService] Finished pagination for ${domain}. Fetched ${allProducts.length} total products across ${pageCount} pages.`);
+    return allProducts;
+  }
+
 
   /**
    * Retrieve location ID with fallback strategies
@@ -340,10 +376,15 @@ export class ShopifyService {
   static async registerWebhooks(domain: string, token: string, connectionId: string): Promise<void> {
     try {
       const client = this.getClient(domain, token);
-      const apiBase = (process.env.API_BASE_URL || 'http://localhost:5050').replace(/\/$/, '');
+      const apiBase = (
+        process.env.SHOPIFY_WEBHOOK_BASE_URL ||
+        (process.env.API_BASE_URL && process.env.API_BASE_URL.startsWith('https://')
+          ? process.env.API_BASE_URL
+          : 'https://omnichannel-api-m9hx.onrender.com')
+      ).replace(/\/$/, '');
 
-      // Shopify only delivers webhooks to https endpoints (or localhost during dev)
-      if (!apiBase.startsWith('https://') && !apiBase.includes('localhost')) {
+      // Shopify only delivers webhooks to https endpoints
+      if (!apiBase.startsWith('https://')) {
         logger.warn(`Skipping Shopify webhook registration: API_BASE_URL is not HTTPS (${apiBase})`);
         return;
       }
@@ -357,16 +398,37 @@ export class ShopifyService {
         'orders/create',
       ];
 
+      // Retrieve existing webhooks to update or create
+      let existingWebhooks: any[] = [];
+      try {
+        const whRes = await client.get('/webhooks.json');
+        existingWebhooks = whRes.data?.webhooks || [];
+      } catch (getErr: any) {
+        logger.warn(`Could not list existing Shopify webhooks: ${getErr.message}`);
+      }
+
       for (const topic of topics) {
         try {
-          await client.post('/webhooks.json', {
-            webhook: {
-              topic,
-              address: webhookUrl,
-              format: 'json',
-            },
-          });
-          logger.info(`Registered Shopify webhook [${topic}] -> ${webhookUrl}`);
+          const match = existingWebhooks.find((w: any) => w.topic === topic);
+          if (match) {
+            if (match.address !== webhookUrl) {
+              await client.put(`/webhooks/${match.id}.json`, {
+                webhook: { id: match.id, address: webhookUrl },
+              });
+              logger.info(`Updated existing Shopify webhook [${topic}] -> ${webhookUrl}`);
+            } else {
+              logger.debug(`Shopify webhook [${topic}] already up-to-date at ${webhookUrl}`);
+            }
+          } else {
+            await client.post('/webhooks.json', {
+              webhook: {
+                topic,
+                address: webhookUrl,
+                format: 'json',
+              },
+            });
+            logger.info(`Registered Shopify webhook [${topic}] -> ${webhookUrl}`);
+          }
         } catch (regErr: any) {
           if (regErr.response?.status === 422) {
             logger.debug(`Shopify webhook [${topic}] already registered.`);
@@ -397,21 +459,42 @@ export class ShopifyService {
     let mappedCount = 0;
     let canonicalProduct: any = null;
 
+    // 0. Check if this Shopify product was already mapped to a Canonical Product
+    const existingChannelProduct = await ChannelProduct.findOne({
+      organizationId,
+      channelConnectionId: connection._id,
+      externalProductId: productId,
+    });
+    if (existingChannelProduct) {
+      const mapping = await ProductMapping.findOne({
+        organizationId,
+        channelProductId: existingChannelProduct._id,
+      });
+      if (mapping?.canonicalProductId) {
+        canonicalProduct = await CanonicalProduct.findOne({
+          _id: mapping.canonicalProductId,
+          organizationId,
+        });
+      }
+    }
+
     // Check if canonical product already exists for this master SKU
     const primarySku = (variants[0]?.sku && variants[0].sku.trim()) || `SHOPIFY-${productId}`;
     const cleanPrimarySku = primarySku.toUpperCase();
 
-    // 1. Try to find existing canonical product by SKU or title
-    const existingVariant = await ProductVariant.findOne({
-      organizationId,
-      sku: cleanPrimarySku,
-    });
-
-    if (existingVariant) {
-      canonicalProduct = await CanonicalProduct.findOne({
-        _id: existingVariant.canonicalProductId,
+    // 1. Try to find existing canonical product by SKU or title if not found via mapping
+    if (!canonicalProduct) {
+      const existingVariant = await ProductVariant.findOne({
         organizationId,
+        sku: cleanPrimarySku,
       });
+
+      if (existingVariant) {
+        canonicalProduct = await CanonicalProduct.findOne({
+          _id: existingVariant.canonicalProductId,
+          organizationId,
+        });
+      }
     }
 
     if (!canonicalProduct) {
@@ -424,21 +507,21 @@ export class ShopifyService {
       });
     }
 
-    // 2. Create Canonical Product if it doesn't exist
+    // 2. Create or Update Canonical Product
+    const images = (shopifyProduct.images || []).map((img: any, idx: number) => ({
+      url: typeof img === 'string' ? img : img.src,
+      altText: typeof img === 'object' ? img.alt : '',
+      position: idx + 1,
+      isPrimary: idx === 0,
+    }));
+
+    const tags = typeof shopifyProduct.tags === 'string'
+      ? shopifyProduct.tags.split(',').map((t: string) => t.trim()).filter(Boolean)
+      : Array.isArray(shopifyProduct.tags)
+      ? shopifyProduct.tags
+      : [];
+
     if (!canonicalProduct) {
-      const images = (shopifyProduct.images || []).map((img: any, idx: number) => ({
-        url: typeof img === 'string' ? img : img.src,
-        altText: typeof img === 'object' ? img.alt : '',
-        position: idx + 1,
-        isPrimary: idx === 0,
-      }));
-
-      const tags = typeof shopifyProduct.tags === 'string'
-        ? shopifyProduct.tags.split(',').map((t: string) => t.trim()).filter(Boolean)
-        : Array.isArray(shopifyProduct.tags)
-        ? shopifyProduct.tags
-        : [];
-
       canonicalProduct = await CanonicalProduct.create({
         organizationId,
         masterSku: cleanPrimarySku,
@@ -454,6 +537,31 @@ export class ShopifyService {
         totalVariants: variants.length || 1,
       });
       logger.info(`Auto-created Canonical Product "${canonicalProduct.title}" (SKU: ${cleanPrimarySku}) from Shopify`);
+    } else {
+      // Sync incoming Shopify updates to existing Canonical Product
+      if (shopifyProduct.title && shopifyProduct.title.trim()) {
+        canonicalProduct.title = shopifyProduct.title.trim();
+      }
+      if (shopifyProduct.body_html !== undefined) {
+        canonicalProduct.description = shopifyProduct.body_html;
+      }
+      if (shopifyProduct.vendor) {
+        canonicalProduct.brand = shopifyProduct.vendor;
+      }
+      if (shopifyProduct.product_type) {
+        canonicalProduct.category = shopifyProduct.product_type;
+      }
+      if (variants[0]?.price) {
+        canonicalProduct.defaultRetailPrice = parseFloat(variants[0].price) || canonicalProduct.defaultRetailPrice;
+      }
+      if (images.length > 0) {
+        canonicalProduct.images = images;
+      }
+      if (tags.length > 0) {
+        canonicalProduct.tags = tags;
+      }
+      canonicalProduct.totalVariants = variants.length || canonicalProduct.totalVariants;
+      await canonicalProduct.save();
     }
 
     // 3. Process each variant
@@ -488,11 +596,27 @@ export class ShopifyService {
       );
 
       // Upsert ProductVariant on CanonicalProduct
-      let canonicalVariant = await ProductVariant.findOne({
-        organizationId,
-        canonicalProductId: canonicalProduct._id,
-        sku: vSku,
-      });
+      let canonicalVariant: any = null;
+      if (channelProd) {
+        const varMapping = await ProductMapping.findOne({
+          organizationId,
+          channelProductId: channelProd._id,
+        });
+        if (varMapping?.canonicalVariantId) {
+          canonicalVariant = await ProductVariant.findOne({
+            _id: varMapping.canonicalVariantId,
+            organizationId,
+          });
+        }
+      }
+
+      if (!canonicalVariant) {
+        canonicalVariant = await ProductVariant.findOne({
+          organizationId,
+          canonicalProductId: canonicalProduct._id,
+          sku: vSku,
+        });
+      }
 
       if (!canonicalVariant) {
         canonicalVariant = await ProductVariant.create({
@@ -506,6 +630,13 @@ export class ShopifyService {
           costPrice: 0,
           weight: typeof v.weight === 'number' ? v.weight : 0,
         });
+      } else {
+        // Synchronize updated price and properties from Shopify to Canonical Variant
+        canonicalVariant.retailPrice = price;
+        if (v.barcode) canonicalVariant.barcode = v.barcode;
+        if (v.title && v.title !== 'Default Title') canonicalVariant.title = v.title;
+        if (typeof v.weight === 'number') canonicalVariant.weight = v.weight;
+        await canonicalVariant.save();
       }
 
       // Upsert InventoryItem
@@ -522,6 +653,7 @@ export class ShopifyService {
         },
         { upsert: true, new: true }
       );
+
 
       // Create / update ProductMapping
       await ProductMapping.findOneAndUpdate(

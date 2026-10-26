@@ -116,10 +116,7 @@ export class SyncController {
               if (conn.channelType === ChannelType.SHOPIFY) {
                 try {
                   const { domain, token } = ShopifyService.getCredentials(conn);
-                  const client = ShopifyService.getClient(domain, token);
-
-                  const shopRes = await client.get('/products.json?limit=250');
-                  const products = shopRes.data?.products || [];
+                  const products = await ShopifyService.fetchAllProducts(domain, token);
 
                   for (const prod of products) {
                     const { mappedCount } = await ShopifyService.ingestShopifyProduct({
@@ -401,9 +398,12 @@ export class SyncController {
         if (conn.channelType === ChannelType.SHOPIFY) {
           try {
             const { domain, token } = ShopifyService.getCredentials(conn);
-            const client = ShopifyService.getClient(domain, token);
-            const shopRes = await client.get('/products.json?limit=250');
-            const prods = shopRes.data?.products || [];
+            const prods = await ShopifyService.fetchAllProducts(domain, token);
+
+            // Auto-ensure webhooks are registered to deliver updates
+            ShopifyService.registerWebhooks(domain, token, conn._id.toString()).catch((e) =>
+              logger.warn(`Could not register webhooks during importToCanonical: ${e.message}`)
+            );
 
             for (const prod of prods) {
               for (const variant of prod.variants || []) {
@@ -541,13 +541,36 @@ export class SyncController {
 
           if (canonicalProduct) {
             alreadyImportedProductsCount++;
-            if (forceReimport) {
-              canonicalProduct.description = description || canonicalProduct.description;
-              canonicalProduct.brand = brand || canonicalProduct.brand;
-              canonicalProduct.category = category || canonicalProduct.category;
-              canonicalProduct.tags = tags.length > 0 ? tags : canonicalProduct.tags;
-              if (images.length > 0) canonicalProduct.images = images;
+            let hasProductChanged = false;
+            if (description && canonicalProduct.description !== description) {
+              canonicalProduct.description = description;
+              hasProductChanged = true;
+            }
+            if (brand && canonicalProduct.brand !== brand) {
+              canonicalProduct.brand = brand;
+              hasProductChanged = true;
+            }
+            if (category && canonicalProduct.category !== category) {
+              canonicalProduct.category = category;
+              hasProductChanged = true;
+            }
+            if (tags.length > 0) {
+              canonicalProduct.tags = tags;
+              hasProductChanged = true;
+            }
+            if (images.length > 0) {
+              canonicalProduct.images = images;
+              hasProductChanged = true;
+            }
+            if (firstItem.price !== undefined && firstItem.price > 0 && canonicalProduct.defaultRetailPrice !== firstItem.price) {
+              canonicalProduct.defaultRetailPrice = firstItem.price;
+              hasProductChanged = true;
+            }
+            if (canonicalProduct.totalVariants !== items.length) {
               canonicalProduct.totalVariants = items.length;
+              hasProductChanged = true;
+            }
+            if (hasProductChanged || forceReimport) {
               await canonicalProduct.save();
               updatedProductsCount++;
             }
@@ -580,16 +603,26 @@ export class SyncController {
             });
 
             if (variant) {
-              if (forceReimport) {
-                variant.retailPrice = item.price || variant.retailPrice;
+              let hasVarChanged = false;
+              if (item.price !== undefined && variant.retailPrice !== item.price) {
+                variant.retailPrice = item.price;
+                hasVarChanged = true;
+              }
+              if (item.barcode && variant.barcode !== item.barcode) {
+                variant.barcode = item.barcode;
+                hasVarChanged = true;
+              }
+              if (hasVarChanged || forceReimport) {
                 await variant.save();
+              }
 
-                const invItem = await InventoryItem.findOne({
-                  organizationId: req.tenantId,
-                  canonicalVariantId: variant._id,
-                });
-                if (invItem && typeof item.inventoryQuantity === 'number') {
-                  const safeStock = Math.max(0, item.inventoryQuantity);
+              const invItem = await InventoryItem.findOne({
+                organizationId: req.tenantId,
+                canonicalVariantId: variant._id,
+              });
+              if (invItem && typeof item.inventoryQuantity === 'number') {
+                const safeStock = Math.max(0, item.inventoryQuantity);
+                if (invItem.trackedStock !== safeStock || forceReimport) {
                   invItem.trackedStock = safeStock;
                   invItem.availableToAllocate = Math.max(
                     0,
@@ -669,11 +702,20 @@ export class SyncController {
       }
 
       const channelLabel = connections.length === 1 ? `${connections[0].name} (${connections[0].channelType})` : 'your connected stores';
-      const alreadyImported = newlyImportedProductsCount === 0 && alreadyImportedProductsCount > 0 && !forceReimport;
+      const alreadyImported = newlyImportedProductsCount === 0 && alreadyImportedProductsCount > 0 && !forceReimport && updatedProductsCount === 0;
 
       logger.info(
-        `Import summary for ${channelLabel}: ${newlyImportedProductsCount} new products, ${alreadyImportedProductsCount} already existing, ${newlyImportedVariantsCount} new variants, ${mappedCount} mappings.`
+        `Import summary for ${channelLabel}: ${newlyImportedProductsCount} new products, ${alreadyImportedProductsCount} already existing, ${updatedProductsCount} updated products, ${newlyImportedVariantsCount} new variants, ${mappedCount} mappings.`
       );
+
+      let responseMessage = '';
+      if (newlyImportedProductsCount > 0) {
+        responseMessage = `Successfully imported ${newlyImportedProductsCount} new products (${newlyImportedVariantsCount} variants) from ${channelLabel} into Master Catalog!`;
+      } else if (updatedProductsCount > 0) {
+        responseMessage = `Successfully synchronized ${updatedProductsCount} products with latest prices and stock from ${channelLabel}!`;
+      } else {
+        responseMessage = `All products from ${channelLabel} are already imported and up-to-date in the Master Catalog (${alreadyImportedProductsCount} products).`;
+      }
 
       return res.json({
         success: true,
@@ -686,11 +728,7 @@ export class SyncController {
           mappedCount,
           channelName: connections.length === 1 ? connections[0].name : 'All Channels',
           channelType: connections.length === 1 ? connections[0].channelType : undefined,
-          message: alreadyImported
-            ? `Products from ${channelLabel} are already imported in your Master Catalog (${alreadyImportedProductsCount} products).`
-            : forceReimport
-            ? `Successfully refreshed and synchronized ${alreadyImportedProductsCount} products from ${channelLabel}!`
-            : `Successfully imported ${newlyImportedProductsCount} new products (${newlyImportedVariantsCount} variants) from ${channelLabel} into your Master Catalog!`,
+          message: responseMessage,
         },
       });
     } catch (error: any) {

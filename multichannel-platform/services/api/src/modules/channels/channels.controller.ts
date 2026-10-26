@@ -266,9 +266,7 @@ export class ChannelsController {
           // Initial catalog import in background
           (async () => {
             try {
-              const client = ShopifyService.getClient(domain, token);
-              const shopRes = await client.get('/products.json?limit=250');
-              const products = shopRes.data?.products || [];
+              const products = await ShopifyService.fetchAllProducts(domain, token);
               for (const prod of products) {
                 await ShopifyService.ingestShopifyProduct({
                   organizationId: req.tenantId,
