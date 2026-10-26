@@ -541,18 +541,32 @@ export default function ChannelsPage() {
                   <div className="mt-6 grid grid-cols-2 gap-3 py-3 px-3.5 bg-slate-800/40 rounded-xl border border-slate-800">
                     <div>
                       <span className="text-[10px] uppercase font-semibold text-slate-500 block">
-                        Imported Listings
+                        Store Products
                       </span>
-                      <span className="text-base font-bold text-white">
-                        {channel.totalListings || 0}
+                      <div className="flex items-baseline gap-1.5">
+                        <span className="text-base font-bold text-white">
+                          {channel.totalProducts || channel.totalListings || 0}
+                        </span>
+                        <span className="text-[10px] text-slate-400">products</span>
+                      </div>
+                      <span className="text-[10px] text-slate-400 font-mono block mt-0.5">
+                        {channel.totalListings || 0} listings / variants
                       </span>
                     </div>
                     <div>
                       <span className="text-[10px] uppercase font-semibold text-slate-500 block">
                         Mapped to Catalog
                       </span>
-                      <span className="text-base font-bold text-brand-400">
-                        {channel.totalMapped || 0}
+                      <div className="flex items-baseline gap-1.5">
+                        <span className="text-base font-bold text-brand-400">
+                          {channel.totalMapped || 0}
+                        </span>
+                        <span className="text-[10px] text-slate-400">mapped</span>
+                      </div>
+                      <span className="text-[10px] text-emerald-400 font-semibold block mt-0.5">
+                        {channel.totalListings > 0 && channel.totalMapped >= channel.totalListings
+                          ? '100% Synchronized'
+                          : `${channel.totalMapped} / ${channel.totalListings} synced`}
                       </span>
                     </div>
                   </div>

@@ -25,8 +25,26 @@ export class ChannelsController {
         { $group: { _id: '$channelConnectionId', totalListings: { $sum: 1 } } },
       ]);
 
-      const mappedCounts = await ProductMapping.aggregate([
+      const productCounts = await ChannelProduct.aggregate([
         { $match: { channelConnectionId: { $in: connectionIds } } },
+        {
+          $group: {
+            _id: {
+              channelConnectionId: '$channelConnectionId',
+              externalProductId: '$externalProductId',
+            },
+          },
+        },
+        {
+          $group: {
+            _id: '$_id.channelConnectionId',
+            totalProducts: { $sum: 1 },
+          },
+        },
+      ]);
+
+      const mappedCounts = await ProductMapping.aggregate([
+        { $match: { channelConnectionId: { $in: connectionIds }, status: 'MAPPED' } },
         { $group: { _id: '$channelConnectionId', totalMapped: { $sum: 1 } } },
       ]);
 
@@ -34,6 +52,8 @@ export class ChannelsController {
         const idStr = conn._id.toString();
         const listings =
           listingCounts.find((l) => l._id.toString() === idStr)?.totalListings || 0;
+        const products =
+          productCounts.find((p) => p._id.toString() === idStr)?.totalProducts || listings;
         const mapped =
           mappedCounts.find((m) => m._id.toString() === idStr)?.totalMapped || 0;
 
@@ -42,6 +62,7 @@ export class ChannelsController {
           _id: idStr,
           id: idStr,
           totalListings: listings,
+          totalProducts: products,
           totalMapped: mapped,
         };
       });

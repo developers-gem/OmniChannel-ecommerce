@@ -258,9 +258,16 @@ export default function MappingPage() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-white">Product Listing Mapping</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold tracking-tight text-white">Product Listing Mapping</h1>
+            {mappingsPagination?.total !== undefined && (
+              <span className="bg-purple-950/80 border border-purple-800 text-purple-300 text-xs font-bold px-2.5 py-0.5 rounded-full">
+                {mappingsPagination.total} Active SKU Mappings
+              </span>
+            )}
+          </div>
           <p className="text-xs text-slate-400 mt-1">
-            Map external listings from Shopify, eBay, and custom channels to platform master variants for two-way sync
+            Map external listings from Shopify & eBay to platform master variants (each mapping connects a channel listing to a master SKU)
           </p>
         </div>
 

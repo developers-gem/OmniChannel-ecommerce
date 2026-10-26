@@ -476,10 +476,135 @@ export class ProductsController {
     }
   }
 
+  // GET /api/v1/products/summary-counts - Returns unified catalog and multi-store channel statistics
+  static async getSummaryCounts(req: Request, res: Response) {
+    try {
+      const tenantId = req.tenantId;
+
+      const [
+        totalMasterProducts,
+        totalVariants,
+        activeChannels,
+        activeMappings,
+        allChannelProducts,
+      ] = await Promise.all([
+        CanonicalProduct.countDocuments({ organizationId: tenantId }),
+        ProductVariant.countDocuments({ organizationId: tenantId }),
+        ChannelConnection.find({ organizationId: tenantId, status: ChannelStatus.ACTIVE }).lean(),
+        ProductMapping.find({ organizationId: tenantId, status: MappingStatus.MAPPED }).lean(),
+        ChannelProduct.find({ organizationId: tenantId }).lean(),
+      ]);
+
+      const channelBreakdown: Record<
+        string,
+        {
+          channelId: string;
+          channelName: string;
+          channelType: string;
+          productsCount: number;
+          listingsCount: number;
+          mappedCount: number;
+        }
+      > = {};
+      const channelProductsSet: Record<string, Set<string>> = {};
+
+      for (const ch of activeChannels) {
+        const chIdStr = ch._id.toString();
+        channelBreakdown[chIdStr] = {
+          channelId: chIdStr,
+          channelName: ch.name,
+          channelType: ch.channelType,
+          productsCount: 0,
+          listingsCount: allChannelProducts.filter(
+            (p) => p.channelConnectionId?.toString() === chIdStr
+          ).length,
+          mappedCount: 0,
+        };
+        channelProductsSet[chIdStr] = new Set();
+      }
+
+      const mappedCanonicalIds = new Set<string>();
+
+      for (const m of activeMappings) {
+        const prodId = m.canonicalProductId?.toString();
+        const chId = m.channelConnectionId?.toString();
+        if (prodId) {
+          mappedCanonicalIds.add(prodId);
+          if (chId && channelProductsSet[chId]) {
+            channelProductsSet[chId].add(prodId);
+          }
+        }
+        if (chId && channelBreakdown[chId]) {
+          channelBreakdown[chId].mappedCount++;
+        }
+      }
+
+      for (const chId in channelProductsSet) {
+        if (channelBreakdown[chId]) {
+          channelBreakdown[chId].productsCount = channelProductsSet[chId].size;
+        }
+      }
+
+      // Products with strictly 0 active mappings (added in platform, not on any channel)
+      const zeroMappedProducts = Math.max(0, totalMasterProducts - mappedCanonicalIds.size);
+
+      // Incomplete mapped products (mapped to at least 1 channel, but missing at least 1 active channel)
+      let incompleteMappedProducts = 0;
+      if (activeChannels.length > 1) {
+        const canonicalIds = await CanonicalProduct.find({ organizationId: tenantId }).distinct('_id');
+        for (const cid of canonicalIds) {
+          const cidStr = cid.toString();
+          const mappedToChannels = activeMappings
+            .filter((m) => m.canonicalProductId?.toString() === cidStr)
+            .map((m) => m.channelConnectionId?.toString());
+          const uniqueCh = new Set(mappedToChannels);
+          if (uniqueCh.size > 0 && uniqueCh.size < activeChannels.length) {
+            incompleteMappedProducts++;
+          }
+        }
+      }
+
+      const shopifyChannel = activeChannels.find((c) => c.channelType === ChannelType.SHOPIFY);
+      const ebayChannel = activeChannels.find((c) => c.channelType === ChannelType.EBAY);
+
+      const shopifyStats = shopifyChannel
+        ? channelBreakdown[shopifyChannel._id.toString()]
+        : { channelId: '', channelName: 'Shopify', channelType: 'SHOPIFY', productsCount: 0, listingsCount: 0, mappedCount: 0 };
+
+      const ebayStats = ebayChannel
+        ? channelBreakdown[ebayChannel._id.toString()]
+        : { channelId: '', channelName: 'eBay', channelType: 'EBAY', productsCount: 0, listingsCount: 0, mappedCount: 0 };
+
+      return res.json({
+        success: true,
+        data: {
+          totalMasterProducts,
+          totalVariants,
+          totalTrackedSkus: totalVariants,
+          totalMappings: activeMappings.length,
+          zeroMappedProducts,
+          incompleteMappedProducts,
+          totalNeedsMapping: zeroMappedProducts + incompleteMappedProducts,
+          channelBreakdown,
+          shopify: shopifyStats,
+          ebay: ebayStats,
+          activeChannelsCount: activeChannels.length,
+        },
+      });
+    } catch (error: any) {
+      logger.error('Failed to get summary counts:', error);
+      return res.status(500).json({
+        success: false,
+        error: { message: error.message || 'Failed to fetch catalog summary counts' },
+      });
+    }
+  }
+
   // GET /api/v1/products/zero-mapped - List all canonical products with 0 active mappings or unmapped from channels
   static async listZeroMapped(req: Request, res: Response) {
     try {
       const search = (req.query.search as string) || '';
+      const filter = (req.query.filter as string) || 'all';
 
       const activeChannels = await ChannelConnection.find({
         organizationId: req.tenantId,
@@ -572,15 +697,19 @@ export class ProductsController {
         });
 
         const isZeroMapped = activeMapped.length === 0;
+        const missingChannels = availableChannels.filter((c) => !c.isMapped);
+        const isPartiallyMapped = activeMapped.length > 0 && missingChannels.length > 0;
 
-        // Include all products that have 0 active mappings OR have unmapped channel records
-        if (isZeroMapped || unmapped.length > 0) {
+        // Include all products that have 0 active mappings OR have unmapped channel records OR missing channels
+        if (isZeroMapped || isPartiallyMapped || unmapped.length > 0) {
           enrichedList.push({
             ...prod,
             variants: prodVariants,
             totalStock,
             activeMappedCount: activeMapped.length,
             isZeroMapped,
+            isPartiallyMapped,
+            missingChannels,
             unmappedFrom,
             activeChannels: activeChannelsList,
             availableChannels,
@@ -588,10 +717,26 @@ export class ProductsController {
         }
       }
 
+      let finalList = enrichedList;
+      if (filter === 'zero_only') {
+        finalList = enrichedList.filter((p) => p.isZeroMapped);
+      } else if (filter === 'missing_ebay') {
+        finalList = enrichedList.filter((p) =>
+          p.missingChannels?.some((c: any) => c.channelType === ChannelType.EBAY)
+        );
+      } else if (filter === 'missing_shopify') {
+        finalList = enrichedList.filter((p) =>
+          p.missingChannels?.some((c: any) => c.channelType === ChannelType.SHOPIFY)
+        );
+      } else if (filter === 'unmapped_only') {
+        finalList = enrichedList.filter((p) => (p.unmappedFrom || []).length > 0);
+      }
+
       return res.json({
         success: true,
-        data: enrichedList,
+        data: finalList,
         totalZeroMapped: enrichedList.filter((p) => p.isZeroMapped).length,
+        totalPartiallyMapped: enrichedList.filter((p) => p.isPartiallyMapped).length,
         totalWithUnmappedChannels: enrichedList.length,
         activeChannels: activeChannels.map((c: any) => ({
           id: c._id,

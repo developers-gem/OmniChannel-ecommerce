@@ -37,7 +37,9 @@ export function ZeroMappedModal({
   const { format } = useCurrency();
 
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterType, setFilterType] = useState<'all' | 'zero_only' | 'unmapped_only'>('all');
+  const [filterType, setFilterType] = useState<
+    'all' | 'zero_only' | 'missing_ebay' | 'missing_shopify' | 'unmapped_only'
+  >('all');
   const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
   const [productChannelSelections, setProductChannelSelections] = useState<{
     [productId: string]: string[];
@@ -71,6 +73,10 @@ export function ZeroMappedModal({
   // Filter products locally by filterType
   const filteredProducts = productsList.filter((p: any) => {
     if (filterType === 'zero_only') return p.isZeroMapped;
+    if (filterType === 'missing_ebay')
+      return (p.missingChannels || []).some((c: any) => c.channelType === 'EBAY');
+    if (filterType === 'missing_shopify')
+      return (p.missingChannels || []).some((c: any) => c.channelType === 'SHOPIFY');
     if (filterType === 'unmapped_only') return (p.unmappedFrom || []).length > 0;
     return true;
   });
@@ -284,33 +290,59 @@ export function ZeroMappedModal({
               />
             </div>
 
-            <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 p-1 rounded-xl">
+            <div className="flex flex-wrap items-center gap-1.5 bg-slate-900 border border-slate-800 p-1 rounded-xl">
               <button
                 type="button"
                 onClick={() => setFilterType('all')}
-                className={`px-3 py-1.5 rounded-lg font-semibold transition ${
+                className={`px-2.5 py-1.5 rounded-lg font-semibold transition cursor-pointer ${
                   filterType === 'all'
                     ? 'bg-brand-600 text-white shadow-sm'
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
-                All ({productsList.length})
+                All Needs Mapping ({productsList.length})
               </button>
               <button
                 type="button"
                 onClick={() => setFilterType('zero_only')}
-                className={`px-3 py-1.5 rounded-lg font-semibold transition ${
+                className={`px-2.5 py-1.5 rounded-lg font-semibold transition cursor-pointer ${
                   filterType === 'zero_only'
                     ? 'bg-brand-600 text-white shadow-sm'
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
-                Strictly 0-Mapped ({productsList.filter((p) => p.isZeroMapped).length})
+                0-Mapped on Any Store ({productsList.filter((p) => p.isZeroMapped).length})
               </button>
+              {activeChannels.some((c: any) => c.channelType === 'EBAY') && (
+                <button
+                  type="button"
+                  onClick={() => setFilterType('missing_ebay')}
+                  className={`px-2.5 py-1.5 rounded-lg font-semibold transition cursor-pointer ${
+                    filterType === 'missing_ebay'
+                      ? 'bg-amber-600 text-white shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Missing eBay ({productsList.filter((p) => (p.missingChannels || []).some((c: any) => c.channelType === 'EBAY')).length})
+                </button>
+              )}
+              {activeChannels.some((c: any) => c.channelType === 'SHOPIFY') && (
+                <button
+                  type="button"
+                  onClick={() => setFilterType('missing_shopify')}
+                  className={`px-2.5 py-1.5 rounded-lg font-semibold transition cursor-pointer ${
+                    filterType === 'missing_shopify'
+                      ? 'bg-emerald-600 text-white shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Missing Shopify ({productsList.filter((p) => (p.missingChannels || []).some((c: any) => c.channelType === 'SHOPIFY')).length})
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setFilterType('unmapped_only')}
-                className={`px-3 py-1.5 rounded-lg font-semibold transition ${
+                className={`px-2.5 py-1.5 rounded-lg font-semibold transition cursor-pointer ${
                   filterType === 'unmapped_only'
                     ? 'bg-brand-600 text-white shadow-sm'
                     : 'text-slate-400 hover:text-slate-200'

@@ -332,12 +332,17 @@ export default function InventoryPage() {
       {/* Page Title & Navigation Tabs */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2.5">
-            <Boxes className="w-6 h-6 text-brand-400" />
-            <span>Inventory & Channel Sync</span>
-          </h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2.5">
+              <Boxes className="w-6 h-6 text-brand-400" />
+              <span>Inventory & Channel Sync</span>
+            </h1>
+            <span className="bg-emerald-950/80 border border-emerald-800 text-emerald-300 text-xs font-bold px-2.5 py-0.5 rounded-full font-mono">
+              {metrics.total} Tracked Variant SKUs
+            </span>
+          </div>
           <p className="text-xs text-slate-400 mt-1">
-            Real-time multi-channel stock ledger, pricing modifiers, health status, and live channel synchronization
+            Real-time stock ledger tracking individual variant SKUs across our master catalog products
           </p>
         </div>
 

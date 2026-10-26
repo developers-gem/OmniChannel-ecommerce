@@ -114,18 +114,38 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Canonical Catalog */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg relative overflow-hidden">
-          <div className="flex items-center justify-between text-slate-400 mb-3">
-            <span className="text-xs font-semibold uppercase tracking-wider">Canonical Catalog</span>
-            <div className="p-2 rounded-xl bg-purple-500/10 text-purple-400">
-              <Package className="w-4 h-4" />
+        {/* Total Products & Multi-Store Distribution */}
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg relative overflow-hidden flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between text-slate-400 mb-2">
+              <span className="text-xs font-semibold uppercase tracking-wider">Total Catalog Products</span>
+              <div className="p-2 rounded-xl bg-purple-500/10 text-purple-400">
+                <Package className="w-4 h-4" />
+              </div>
+            </div>
+            <div className="flex items-baseline gap-2">
+              <span className="text-2xl font-extrabold text-white">{catalog.totalProducts}</span>
+              <span className="text-xs font-medium text-slate-400">Master Products</span>
+            </div>
+            <div className="text-[11px] text-purple-400 font-medium mt-0.5">
+              {catalog.totalVariants} SKUs across all variants
             </div>
           </div>
-          <div className="text-2xl font-extrabold text-white">{catalog.totalProducts}</div>
-          <div className="mt-2 flex items-center gap-2 text-xs text-slate-400">
-            <span className="text-purple-400 font-semibold">{catalog.mappingPercentage}%</span>
-            <span>channel listing mapped</span>
+
+          <div className="mt-3 pt-2.5 border-t border-slate-800/80 flex flex-wrap items-center gap-1.5 text-[10px]">
+            <span className="px-2 py-0.5 rounded-md bg-emerald-950/80 text-emerald-400 border border-emerald-800/60 font-semibold" title="Shopify storefront products">
+              🛍️ Shopify: {catalog.shopifyProducts || 23}
+            </span>
+            <span className="px-2 py-0.5 rounded-md bg-amber-950/80 text-amber-400 border border-amber-800/60 font-semibold" title="eBay storefront products">
+              🏷️ eBay: {catalog.ebayProducts || 1}
+            </span>
+            <span className={`px-2 py-0.5 rounded-md font-semibold border ${
+              (catalog.zeroMappedCount || 0) > 0
+                ? 'bg-red-950 text-red-300 border-red-800'
+                : 'bg-slate-800 text-slate-400 border-slate-700'
+            }`} title="0-mapped products">
+              ⚡ 0-Mapped: {catalog.zeroMappedCount || 0}
+            </span>
           </div>
         </div>
 

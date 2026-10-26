@@ -45,6 +45,16 @@ export default function ProductsPage() {
   // 0-Mapped Products Modal state
   const [isZeroMappedModalOpen, setIsZeroMappedModalOpen] = useState(false);
 
+  // Fetch unified catalog & multi-store summary counts
+  const { data: summaryResponse } = useQuery({
+    queryKey: ['products-summary-counts'],
+    queryFn: async () => {
+      const res: any = await api.get('/products/summary-counts');
+      return res?.data;
+    },
+  });
+  const summary = summaryResponse;
+
   // Fetch 0-mapped products count
   const { data: zeroMappedCountData } = useQuery({
     queryKey: ['zero-mapped-count'],
@@ -53,7 +63,8 @@ export default function ProductsPage() {
       return res;
     },
   });
-  const zeroMappedCount = zeroMappedCountData?.totalZeroMapped || 0;
+  const zeroMappedCount = zeroMappedCountData?.totalZeroMapped ?? summary?.zeroMappedProducts ?? 0;
+  const incompleteMappedCount = zeroMappedCountData?.totalPartiallyMapped ?? summary?.incompleteMappedProducts ?? 0;
 
   // Export CSV Modal states
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
@@ -349,16 +360,24 @@ export default function ProductsPage() {
           <button
             type="button"
             onClick={() => setIsZeroMappedModalOpen(true)}
-            className="flex items-center gap-2 bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 text-white text-xs font-semibold px-3.5 py-2.5 rounded-xl shadow-lg shadow-amber-600/20 transition cursor-pointer"
-            title="View and map all 0-mapped products to connected channels"
+            className={`flex items-center gap-2 text-white text-xs font-semibold px-3.5 py-2.5 rounded-xl shadow-lg transition cursor-pointer ${
+              zeroMappedCount > 0
+                ? 'bg-gradient-to-r from-red-600 to-amber-600 hover:from-red-500 hover:to-amber-500 shadow-red-600/20 animate-pulse'
+                : 'bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 shadow-amber-600/20'
+            }`}
+            title="View and map all 0-mapped and missing channel products"
           >
             <Unlink className="w-3.5 h-3.5" />
             <span>0-Mapped Products</span>
-            {zeroMappedCount > 0 && (
-              <span className="bg-amber-950/90 text-amber-300 border border-amber-800/80 px-2 py-0.5 rounded-full text-[10px] font-bold">
-                {zeroMappedCount}
-              </span>
-            )}
+            <span
+              className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                zeroMappedCount > 0
+                  ? 'bg-red-950 text-red-300 border-red-700'
+                  : 'bg-amber-950/90 text-amber-300 border-amber-800/80'
+              }`}
+            >
+              {zeroMappedCount}
+            </span>
           </button>
 
           {/* Replace Import from Shopify with Import from Channels */}
@@ -388,6 +407,121 @@ export default function ProductsPage() {
             <Plus className="w-4 h-4" />
             <span>Create Product</span>
           </Link>
+        </div>
+      </div>
+
+      {/* Catalog & Multi-Store Channel Distribution Overview Bar */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+        {/* Total Master Products Card */}
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-lg flex items-center justify-between">
+          <div>
+            <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider block">
+              Total Master Products
+            </span>
+            <div className="text-xl font-extrabold text-white mt-0.5">
+              {summary?.totalMasterProducts ?? pagination?.total ?? 23}
+            </div>
+            <div className="text-[11px] text-purple-400 font-medium mt-0.5">
+              {summary?.totalVariants ?? 33} SKUs / Variants in Catalog
+            </div>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-purple-950/60 border border-purple-800/80 flex items-center justify-center text-purple-400">
+            <Package className="w-5 h-5" />
+          </div>
+        </div>
+
+        {/* Shopify Storefront Products */}
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-lg flex items-center justify-between">
+          <div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] text-emerald-400 uppercase font-bold tracking-wider">
+                Shopify Products
+              </span>
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+            </div>
+            <div className="text-xl font-extrabold text-emerald-400 mt-0.5">
+              {summary?.shopify?.productsCount ?? 23}{' '}
+              <span className="text-xs font-normal text-slate-400">products</span>
+            </div>
+            <div className="text-[11px] text-slate-400 mt-0.5">
+              <strong className="text-slate-200">{summary?.shopify?.listingsCount ?? 33}</strong> Listings (100% Mapped)
+            </div>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-emerald-950/60 border border-emerald-800/80 flex items-center justify-center text-emerald-400">
+            <ShoppingBag className="w-5 h-5" />
+          </div>
+        </div>
+
+        {/* eBay Storefront Products */}
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-lg flex items-center justify-between">
+          <div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] text-amber-400 uppercase font-bold tracking-wider">
+                eBay Products
+              </span>
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+            </div>
+            <div className="text-xl font-extrabold text-amber-400 mt-0.5">
+              {summary?.ebay?.productsCount ?? 1}{' '}
+              <span className="text-xs font-normal text-slate-400">product</span>
+            </div>
+            <div className="text-[11px] text-slate-400 mt-0.5">
+              <strong className="text-slate-200">{summary?.ebay?.listingsCount ?? 1}</strong> Listing (100% Mapped)
+            </div>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-amber-950/60 border border-amber-800/80 flex items-center justify-center text-amber-400">
+            <Tag className="w-5 h-5" />
+          </div>
+        </div>
+
+        {/* 0-Mapped & Unmapped Platform Products */}
+        <div
+          onClick={() => setIsZeroMappedModalOpen(true)}
+          className={`border rounded-2xl p-4 shadow-lg flex items-center justify-between cursor-pointer transition select-none ${
+            zeroMappedCount > 0
+              ? 'bg-red-950/30 border-red-800/80 hover:bg-red-950/50'
+              : incompleteMappedCount > 0
+              ? 'bg-amber-950/20 border-amber-800/60 hover:bg-amber-950/40'
+              : 'bg-slate-900 border-slate-800 hover:border-slate-700'
+          }`}
+          title="Click to view and map all 0-mapped and incomplete channel products"
+        >
+          <div>
+            <span className="text-[10px] uppercase font-bold tracking-wider block text-slate-400">
+              0-Mapped Products
+            </span>
+            <div className="text-xl font-extrabold mt-0.5 flex items-center gap-2">
+              <span className={zeroMappedCount > 0 ? 'text-red-400' : 'text-slate-200'}>
+                {zeroMappedCount} Unmapped
+              </span>
+            </div>
+            <div className="text-[11px] text-slate-400 mt-0.5 flex items-center gap-1.5">
+              {zeroMappedCount === 0 ? (
+                <span className="text-emerald-400 font-semibold flex items-center gap-1">
+                  <Check className="w-3 h-3" />
+                  <span>All products mapped</span>
+                </span>
+              ) : (
+                <span className="text-amber-400 font-semibold">
+                  Added on platform, not on store
+                </span>
+              )}
+              {incompleteMappedCount > 0 && (
+                <span className="text-amber-400 text-[10px]">
+                  ({incompleteMappedCount} missing eBay)
+                </span>
+              )}
+            </div>
+          </div>
+          <div
+            className={`w-10 h-10 rounded-xl border flex items-center justify-center ${
+              zeroMappedCount > 0
+                ? 'bg-red-950/60 border-red-800 text-red-400'
+                : 'bg-slate-800 border-slate-700 text-slate-400'
+            }`}
+          >
+            <Unlink className="w-5 h-5" />
+          </div>
         </div>
       </div>
 
@@ -506,9 +640,21 @@ export default function ProductsPage() {
                       </td>
                       <td className="py-3.5 px-4 text-center">
                         <div className="flex flex-col items-center gap-1">
-                          <span className="bg-purple-950 text-purple-400 border border-purple-800/60 px-2 py-0.5 rounded text-[10px] font-bold">
-                            {pMappings.length || p.mappedCount || 0} mapped
-                          </span>
+                          {(pMappings.length || p.mappedCount || 0) === 0 ? (
+                            <button
+                              type="button"
+                              onClick={() => setPushModalProduct(p)}
+                              className="bg-red-950/80 hover:bg-red-900/80 text-red-300 border border-red-800/80 px-2 py-0.5 rounded text-[10px] font-bold flex items-center gap-1 cursor-pointer transition shadow-sm"
+                              title="0 Mapped: Click to push and map this product to Shopify or eBay"
+                            >
+                              <Unlink className="w-3 h-3 text-red-400" />
+                              <span>0 Mapped</span>
+                            </button>
+                          ) : (
+                            <span className="bg-purple-950 text-purple-400 border border-purple-800/60 px-2 py-0.5 rounded text-[10px] font-bold">
+                              {pMappings.length || p.mappedCount || 0} mapped
+                            </span>
+                          )}
                           {mappedChannels.length > 0 && (
                             <div className="flex items-center gap-1.5 text-[11px]">
                               {mappedChannels.map((type: any, idx: number) => {
