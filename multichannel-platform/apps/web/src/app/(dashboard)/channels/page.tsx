@@ -34,17 +34,20 @@ export default function ChannelsPage() {
   const [refreshToken, setRefreshToken] = useState('');
   const [authCode, setAuthCode] = useState('');
   const [ebayAuthMode, setEbayAuthMode] = useState<'oauth' | 'manual'>('oauth');
+  const [shopifyAuthMode, setShopifyAuthMode] = useState<'oauth' | 'manual'>('oauth');
   const [isOAuthRedirecting, setIsOAuthRedirecting] = useState(false);
+  const [isShopifyOAuthRedirecting, setIsShopifyOAuthRedirecting] = useState(false);
   const [pastedCodeOrUrl, setPastedCodeOrUrl] = useState('');
   const [isVerifyingEbayCode, setIsVerifyingEbayCode] = useState(false);
   const [oauthWindowOpened, setOauthWindowOpened] = useState(false);
+  const [shopifyOauthWindowOpened, setShopifyOauthWindowOpened] = useState(false);
   const [testResults, setTestResults] = useState<Record<string, any>>({});
   const [modalError, setModalError] = useState<string | null>(null);
   const [activeActionId, setActiveActionId] = useState<string | null>(null);
   const [bannerMessage, setBannerMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   useEffect(() => {
-    // Listen for postMessage from popup window (when eBay redirects to public callback)
+    // Listen for postMessage from popup window (when eBay or Shopify redirects to callback)
     const handleAuthMessage = (event: MessageEvent) => {
       if (event.data?.type === 'EBAY_AUTH_SUCCESS') {
         queryClient.invalidateQueries({ queryKey: ['channel-connections'] });
@@ -59,6 +62,18 @@ export default function ChannelsPage() {
         setModalError(`eBay Authorization Error: ${event.data.error || 'Failed'}`);
         setIsOAuthRedirecting(false);
         setIsVerifyingEbayCode(false);
+      } else if (event.data?.type === 'SHOPIFY_AUTH_SUCCESS') {
+        queryClient.invalidateQueries({ queryKey: ['channel-connections'] });
+        setIsModalOpen(false);
+        setShopifyOauthWindowOpened(false);
+        setIsShopifyOAuthRedirecting(false);
+        setBannerMessage({
+          type: 'success',
+          text: `Shopify store ${event.data.storeName ? `'${event.data.storeName}' ` : ''}connected successfully via OAuth! Permanent offline access token saved.`,
+        });
+      } else if (event.data?.type === 'SHOPIFY_AUTH_ERROR') {
+        setModalError(`Shopify Authorization Error: ${event.data.error || 'Failed'}`);
+        setIsShopifyOAuthRedirecting(false);
       }
     };
     window.addEventListener('message', handleAuthMessage);
@@ -78,11 +93,25 @@ export default function ChannelsPage() {
           text: `eBay Authorization Error: ${decodeURIComponent(params.get('ebay_error') || '')}`,
         });
         window.history.replaceState({}, document.title, window.location.pathname);
+      } else if (params.get('shopify_connected') === 'true') {
+        setBannerMessage({
+          type: 'success',
+          text: 'Shopify store connected successfully via OAuth! Permanent offline access token saved.',
+        });
+        queryClient.invalidateQueries({ queryKey: ['channel-connections'] });
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } else if (params.get('shopify_error')) {
+        setBannerMessage({
+          type: 'error',
+          text: `Shopify Authorization Error: ${decodeURIComponent(params.get('shopify_error') || '')}`,
+        });
+        window.history.replaceState({}, document.title, window.location.pathname);
       }
     }
 
     return () => window.removeEventListener('message', handleAuthMessage);
   }, [queryClient]);
+
 
   const { data: channels, isLoading } = useQuery({
     queryKey: ['channel-connections'],
@@ -328,9 +357,55 @@ export default function ChannelsPage() {
     }
   };
 
+  const handleShopifyOAuthConnect = async () => {
+    let domain = storeDomain.trim();
+    if (!domain) {
+      setModalError('Please enter your Shopify store domain (e.g., amazingink-1.myshopify.com)');
+      return;
+    }
+    domain = domain.replace(/^https?:\/\//, '').replace(/\/$/, '');
+    if (!domain.includes('.myshopify.com')) {
+      domain = `${domain}.myshopify.com`;
+    }
+
+    try {
+      setIsShopifyOAuthRedirecting(true);
+      setModalError(null);
+      const targetName = storeName.trim() || domain.replace('.myshopify.com', '');
+
+      const res: any = await api.get(
+        `/channels/shopify/auth-url?shop=${encodeURIComponent(domain)}&name=${encodeURIComponent(targetName)}`
+      );
+
+      if (res?.data?.url) {
+        const popup = window.open(
+          res.data.url,
+          'shopify_oauth_popup',
+          'width=720,height=820,menubar=no,status=no,toolbar=no'
+        );
+        if (!popup || popup.closed || typeof popup.closed === 'undefined') {
+          window.open(res.data.url, '_blank');
+        }
+        setShopifyOauthWindowOpened(true);
+        setIsShopifyOAuthRedirecting(false);
+      } else {
+        throw new Error('Failed to obtain Shopify authorization URL');
+      }
+    } catch (err: any) {
+      setIsShopifyOAuthRedirecting(false);
+      setModalError(err.message || 'Failed to start Shopify OAuth connection');
+    }
+  };
+
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
     setModalError(null);
+
+    if (selectedType === ChannelType.SHOPIFY && shopifyAuthMode === 'oauth') {
+      handleShopifyOAuthConnect();
+      return;
+    }
+
     let domain = storeDomain.trim();
     if (selectedType === ChannelType.EBAY && (!domain || domain.length === 0)) {
       domain = 'api.sandbox.ebay.com';
@@ -365,6 +440,7 @@ export default function ChannelsPage() {
 
     connectMutation.mutate(payload);
   };
+
 
   return (
     <div className="space-y-6">
@@ -889,27 +965,110 @@ export default function ChannelsPage() {
                     </div>
                   )}
                 </div>
+              ) : selectedType === ChannelType.SHOPIFY ? (
+                <div className="space-y-4 pt-1">
+                  {/* Mode Selector Tabs */}
+                  <div className="flex rounded-xl bg-slate-800/80 p-1 border border-slate-700/80">
+                    <button
+                      type="button"
+                      onClick={() => setShopifyAuthMode('oauth')}
+                      className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition ${
+                        shopifyAuthMode === 'oauth'
+                          ? 'bg-brand-600 text-white shadow-md'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      <Zap className="w-3.5 h-3.5" />
+                      <span>1-Click Shopify OAuth</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShopifyAuthMode('manual')}
+                      className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition ${
+                        shopifyAuthMode === 'manual'
+                          ? 'bg-brand-600 text-white shadow-md'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      <Key className="w-3.5 h-3.5" />
+                      <span>Admin API Token</span>
+                    </button>
+                  </div>
+
+                  {shopifyAuthMode === 'oauth' ? (
+                    <div className="p-4 rounded-xl bg-slate-800/50 border border-slate-700/80 space-y-3">
+                      <div className="flex items-start gap-3">
+                        <div className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 mt-0.5 shrink-0">
+                          <ShieldCheck className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <h4 className="text-xs font-bold text-white">OAuth 2.0 Permanent Token Flow</h4>
+                          <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                            Authorizes our app via your deployed backend (<code className="text-emerald-300 font-mono text-[10px]">omnichannel-api-m9hx.onrender.com</code>). Shopify issues a <strong>permanent offline access token</strong> that never expires.
+                          </p>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleShopifyOAuthConnect}
+                        disabled={isShopifyOAuthRedirecting}
+                        className="w-full mt-2 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2 transition disabled:opacity-50"
+                      >
+                        {isShopifyOAuthRedirecting ? (
+                          <>
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                            <span>Opening Shopify App Consent...</span>
+                          </>
+                        ) : (
+                          <>
+                            <ExternalLink className="w-4 h-4" />
+                            <span>
+                              {shopifyOauthWindowOpened
+                                ? 'Re-open Shopify Consent Screen'
+                                : 'Sign in & Connect with Shopify (Opens in New Tab)'}
+                            </span>
+                          </>
+                        )}
+                      </button>
+                      <p className="text-[10px] text-slate-500 text-center">
+                        Opens official Shopify authorization for <span className="text-slate-300 font-mono">{storeDomain || 'your-store.myshopify.com'}</span>.
+                      </p>
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-300 mb-1">
+                        Shopify Admin API Access Token
+                      </label>
+                      <input
+                        type="password"
+                        required
+                        placeholder="shpat_xxxxxxxxxxxxxxxxxxxxx"
+                        value={accessToken}
+                        onChange={(e) => setAccessToken(e.target.value)}
+                        className="w-full px-3.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-white text-xs outline-none focus:border-brand-500 font-mono"
+                      />
+                      <p className="text-[10px] text-slate-500 mt-1">
+                        Live-validated against Shopify Admin API before saving. Encrypted with AES-256-GCM.
+                      </p>
+                    </div>
+                  )}
+                </div>
               ) : (
                 <div>
                   <label className="block text-xs font-semibold text-slate-300 mb-1">
-                    {selectedType === ChannelType.SHOPIFY
-                      ? 'Shopify Admin API Access Token'
-                      : 'Admin API Access Token / API Key'}
+                    Admin API Access Token / API Key
                   </label>
                   <input
                     type="password"
                     required
-                    placeholder={
-                      selectedType === ChannelType.SHOPIFY
-                        ? 'shpat_xxxxxxxxxxxxxxxxxxxxx'
-                        : 'API Key or Bearer Token'
-                    }
+                    placeholder="API Key or Bearer Token"
                     value={accessToken}
                     onChange={(e) => setAccessToken(e.target.value)}
                     className="w-full px-3.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-white text-xs outline-none focus:border-brand-500 font-mono"
                   />
                   <p className="text-[10px] text-slate-500 mt-1">
-                    Live-validated against Shopify Admin API before saving. Encrypted with AES-256-GCM.
+                    Live-validated against custom API before saving.
                   </p>
                 </div>
               )}
@@ -952,6 +1111,25 @@ export default function ChannelsPage() {
                       {isOAuthRedirecting ? 'Opening eBay Window...' : 'Connect via eBay OAuth'}
                     </button>
                   )
+                ) : selectedType === ChannelType.SHOPIFY && shopifyAuthMode === 'oauth' ? (
+                  <button
+                    type="button"
+                    onClick={handleShopifyOAuthConnect}
+                    disabled={isShopifyOAuthRedirecting}
+                    className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-4 py-2 rounded-xl shadow-lg shadow-emerald-600/30 transition disabled:opacity-50 flex items-center gap-1.5"
+                  >
+                    {isShopifyOAuthRedirecting ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Opening Shopify...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Zap className="w-3.5 h-3.5" />
+                        <span>Connect via Shopify OAuth</span>
+                      </>
+                    )}
+                  </button>
                 ) : (
                   <button
                     type="submit"

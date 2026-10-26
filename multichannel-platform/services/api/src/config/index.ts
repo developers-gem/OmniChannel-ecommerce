@@ -44,4 +44,11 @@ export const config = {
       'https://api.ebay.com/oauth/api_scope/sell.fulfillment.readonly',
     ].join(' '),
   },
+  shopify: {
+    apiKey: process.env.SHOPIFY_API_KEY || '',
+    apiSecret: process.env.SHOPIFY_API_SECRET || '',
+    scopes: process.env.SHOPIFY_SCOPES || 'read_products,write_products,read_inventory,write_inventory,read_orders,write_orders,read_fulfillments,write_fulfillments',
+    redirectUri: process.env.SHOPIFY_REDIRECT_URI || 'https://omnichannel-api-m9hx.onrender.com/api/v1/channels/shopify/callback',
+  },
 };
+

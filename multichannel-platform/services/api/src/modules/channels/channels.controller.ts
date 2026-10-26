@@ -722,5 +722,353 @@ export class ChannelsController {
       });
     }
   }
+
+  // Helper to render HTML with popup postMessage or direct redirect for Shopify
+  private static renderShopifyCallbackHtml(res: Response, success: boolean, message?: string, storeName?: string) {
+    const targetUrl = success
+      ? `${config.webBaseUrl}/channels?shopify_connected=true`
+      : `${config.webBaseUrl}/channels?shopify_error=${encodeURIComponent(message || 'Authorization failed')}`;
+    const eventType = success ? 'SHOPIFY_AUTH_SUCCESS' : 'SHOPIFY_AUTH_ERROR';
+
+    return res.status(200).send(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Shopify Authorization</title>
+  <meta http-equiv="refresh" content="2;url=${targetUrl}">
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+    .card { background: #1e293b; border: 1px solid #334155; padding: 32px; border-radius: 16px; text-align: center; max-width: 440px; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5); }
+    h2 { margin-top: 0; color: ${success ? '#34d399' : '#f87171'}; font-size: 20px; }
+    p { font-size: 14px; color: #94a3b8; line-height: 1.5; }
+    .store-badge { display: inline-block; margin: 8px 0; padding: 4px 12px; background: rgba(52, 211, 153, 0.15); color: #34d399; border-radius: 9999px; font-size: 12px; font-weight: 600; }
+    .btn { display: inline-block; margin-top: 16px; padding: 8px 16px; background: #2563eb; color: #fff; text-decoration: none; border-radius: 8px; font-size: 12px; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>${success ? '✓ Shopify Store Connected!' : '✕ Shopify Authorization Failed'}</h2>
+    ${storeName ? `<div class="store-badge">🛍️ ${storeName}</div>` : ''}
+    <p>${success ? 'Your Shopify store has been successfully connected with a permanent offline access token. This window will close automatically...' : (message || 'Authorization was cancelled or encountered an error.')}</p>
+    <a href="${targetUrl}" class="btn">Return to Platform</a>
+  </div>
+  <script>
+    try {
+      if (window.opener && !window.opener.closed) {
+        window.opener.postMessage({ type: '${eventType}', success: ${success}, error: ${JSON.stringify(message || '')}, storeName: ${JSON.stringify(storeName || '')} }, '*');
+        setTimeout(function() { window.close(); }, 800);
+      } else {
+        setTimeout(function() { window.location.href = "${targetUrl}"; }, 1200);
+      }
+    } catch (e) {
+      setTimeout(function() { window.location.href = "${targetUrl}"; }, 1200);
+    }
+  </script>
+</body>
+</html>`);
+  }
+
+  // GET /api/v1/channels/shopify/auth-url - Generate Shopify OAuth Authorization URL
+  static async getShopifyAuthUrl(req: Request, res: Response) {
+    try {
+      const { shop, name, clientId, clientSecret, redirectUri } = req.query;
+
+      if (!shop || typeof shop !== 'string') {
+        return res.status(400).json({
+          success: false,
+          error: { message: 'Shop domain is required (e.g., your-store.myshopify.com)' },
+        });
+      }
+
+      let cleanDomain = shop.toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '').trim();
+      if (!cleanDomain.includes('.myshopify.com')) {
+        cleanDomain = `${cleanDomain}.myshopify.com`;
+      }
+
+      const effectiveClientId = (clientId as string)?.trim() || config.shopify.apiKey;
+      const effectiveClientSecret = (clientSecret as string)?.trim() || config.shopify.apiSecret;
+      const effectiveRedirectUri = (redirectUri as string)?.trim() || config.shopify.redirectUri;
+
+      if (!effectiveClientId || !effectiveClientSecret) {
+        return res.status(400).json({
+          success: false,
+          error: { message: 'Shopify Client ID and Client Secret are required' },
+        });
+      }
+
+      const statePayload = {
+        organizationId: req.tenantId,
+        userId: (req as any).user?._id || (req as any).user?.id,
+        name: (name as string)?.trim() || cleanDomain.replace('.myshopify.com', ''),
+        shop: cleanDomain,
+        clientId: effectiveClientId,
+        clientSecret: effectiveClientSecret,
+        redirectUri: effectiveRedirectUri,
+      };
+
+      const stateToken = jwt.sign(statePayload, config.jwt.secret, { expiresIn: '30m' });
+      const scopes = encodeURIComponent(config.shopify.scopes);
+      const encodedRedirectUri = encodeURIComponent(effectiveRedirectUri);
+
+      // Omitting grant_options ensures Shopify issues a permanent offline access token
+      const authUrl = `https://${cleanDomain}/admin/oauth/authorize?client_id=${effectiveClientId}&scope=${scopes}&redirect_uri=${encodedRedirectUri}&state=${stateToken}`;
+
+      return res.json({
+        success: true,
+        data: {
+          url: authUrl,
+          domain: cleanDomain,
+          redirectUri: effectiveRedirectUri,
+        },
+      });
+    } catch (error: any) {
+      return res.status(500).json({
+        success: false,
+        error: { message: error.message || 'Failed to generate Shopify authorization URL' },
+      });
+    }
+  }
+
+  // GET /api/v1/channels/shopify/callback - Public OAuth redirect handler from Shopify
+  static async handleShopifyCallback(req: Request, res: Response) {
+    const { code, shop, state, error, error_description } = req.query;
+
+    if (error || error_description) {
+      const errMsg = (error_description || error || 'Authorization was cancelled') as string;
+      logger.warn(`[Shopify OAuth Callback] Error: ${errMsg}`);
+      return ChannelsController.renderShopifyCallbackHtml(res, false, errMsg);
+    }
+
+    if (!code || !shop) {
+      return ChannelsController.renderShopifyCallbackHtml(res, false, 'Missing code or shop parameter');
+    }
+
+    let decodedState: any = null;
+    if (state && typeof state === 'string') {
+      try {
+        decodedState = jwt.verify(state, config.jwt.secret);
+      } catch (err: any) {
+        logger.warn(`[Shopify OAuth Callback] State token verification warning: ${err.message}`);
+      }
+    }
+
+    let cleanShop = (shop as string).toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '').trim();
+    if (!cleanShop.includes('.myshopify.com')) {
+      cleanShop = `${cleanShop}.myshopify.com`;
+    }
+
+    const clientId = decodedState?.clientId || config.shopify.apiKey;
+    const clientSecret = decodedState?.clientSecret || config.shopify.apiSecret;
+
+    if (!clientId || !clientSecret) {
+      return ChannelsController.renderShopifyCallbackHtml(res, false, 'Missing Client ID or Secret for token exchange');
+    }
+
+    try {
+      // Exchange authorization code for permanent offline access token
+      const tokenRes = await axios.post(
+        `https://${cleanShop}/admin/oauth/access_token`,
+        {
+          client_id: clientId,
+          client_secret: clientSecret,
+          code: (code as string).trim(),
+        },
+        {
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 15000,
+        }
+      );
+
+      const { access_token, scope } = tokenRes.data;
+      if (!access_token) {
+        throw new Error('Shopify did not return an access token');
+      }
+
+      // Verify connection and retrieve store metadata
+      const shopRes = await axios.get(`https://${cleanShop}/admin/api/2024-01/shop.json`, {
+        headers: {
+          'X-Shopify-Access-Token': access_token,
+          'Content-Type': 'application/json',
+        },
+        timeout: 10000,
+      });
+
+      const shopData = shopRes.data?.shop || {};
+      const storeDisplayName = shopData.name || decodedState?.name || cleanShop.replace('.myshopify.com', '');
+
+      const organizationId = decodedState?.organizationId;
+      if (!organizationId) {
+        return ChannelsController.renderShopifyCallbackHtml(res, false, 'Missing organization context in OAuth state');
+      }
+
+      const encryptedCreds: Record<string, any> = {
+        accessToken: encryptSecret(access_token),
+        clientId: encryptSecret(clientId),
+        clientSecret: encryptSecret(clientSecret),
+        scope: scope || config.shopify.scopes,
+        tokenType: 'Offline Access Token',
+      };
+
+      const existing = await ChannelConnection.findOne({
+        organizationId,
+        channelType: ChannelType.SHOPIFY,
+        $or: [
+          { 'config.storeDomain': cleanShop },
+          { 'config.shopDomain': cleanShop },
+        ],
+      });
+
+      if (existing) {
+        existing.name = decodedState?.name || existing.name;
+        existing.config = {
+          ...(existing.config || {}),
+          storeDomain: cleanShop,
+          shopDomain: cleanShop,
+          shopName: shopData.name || existing.config?.shopName,
+          currency: shopData.currency || existing.config?.currency,
+        };
+        existing.credentials = encryptedCreds;
+        existing.status = ChannelStatus.ACTIVE;
+        existing.lastSyncAt = new Date();
+        await existing.save();
+        logger.info(`[Shopify OAuth] Successfully updated store connection ${existing.name} (${cleanShop})`);
+      } else {
+        await ChannelConnection.create({
+          organizationId,
+          channelType: ChannelType.SHOPIFY,
+          name: decodedState?.name || storeDisplayName,
+          config: {
+            storeDomain: cleanShop,
+            shopDomain: cleanShop,
+            shopName: shopData.name,
+            currency: shopData.currency || 'USD',
+          },
+          credentials: encryptedCreds,
+          status: ChannelStatus.ACTIVE,
+        });
+        logger.info(`[Shopify OAuth] Created new permanent Shopify connection for ${cleanShop}`);
+      }
+
+      return ChannelsController.renderShopifyCallbackHtml(res, true, undefined, storeDisplayName);
+    } catch (err: any) {
+      const errDetail = err.response?.data?.error_description || err.response?.data?.errors || err.message;
+      logger.error(`[Shopify OAuth Callback] Token exchange failed: ${errDetail}`);
+      return ChannelsController.renderShopifyCallbackHtml(res, false, errDetail);
+    }
+  }
+
+  // POST /api/v1/channels/shopify/exchange-code - Exchange authorization code directly
+  static async exchangeShopifyCode(req: Request, res: Response) {
+    try {
+      const { code, shop, name, clientId, clientSecret } = req.body;
+
+      if (!code || !shop) {
+        return res.status(400).json({
+          success: false,
+          error: { message: 'Authorization code and shop domain are required' },
+        });
+      }
+
+      let cleanShop = (shop as string).toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '').trim();
+      if (!cleanShop.includes('.myshopify.com')) {
+        cleanShop = `${cleanShop}.myshopify.com`;
+      }
+
+      const effectiveClientId = clientId?.trim() || config.shopify.apiKey;
+      const effectiveClientSecret = clientSecret?.trim() || config.shopify.apiSecret;
+
+      const tokenRes = await axios.post(
+        `https://${cleanShop}/admin/oauth/access_token`,
+        {
+          client_id: effectiveClientId,
+          client_secret: effectiveClientSecret,
+          code: (code as string).trim(),
+        },
+        {
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 15000,
+        }
+      );
+
+      const { access_token, scope } = tokenRes.data;
+      if (!access_token) {
+        throw new Error('Shopify did not return an access token');
+      }
+
+      const shopRes = await axios.get(`https://${cleanShop}/admin/api/2024-01/shop.json`, {
+        headers: {
+          'X-Shopify-Access-Token': access_token,
+          'Content-Type': 'application/json',
+        },
+        timeout: 10000,
+      });
+
+      const shopData = shopRes.data?.shop || {};
+      const storeDisplayName = name?.trim() || shopData.name || cleanShop.replace('.myshopify.com', '');
+
+      const encryptedCreds: Record<string, any> = {
+        accessToken: encryptSecret(access_token),
+        clientId: encryptSecret(effectiveClientId),
+        clientSecret: encryptSecret(effectiveClientSecret),
+        scope: scope || config.shopify.scopes,
+        tokenType: 'Offline Access Token',
+      };
+
+      const existing = await ChannelConnection.findOne({
+        organizationId: req.tenantId,
+        channelType: ChannelType.SHOPIFY,
+        $or: [
+          { 'config.storeDomain': cleanShop },
+          { 'config.shopDomain': cleanShop },
+        ],
+      });
+
+      let connection: any;
+      if (existing) {
+        existing.name = storeDisplayName;
+        existing.config = {
+          ...(existing.config || {}),
+          storeDomain: cleanShop,
+          shopDomain: cleanShop,
+          shopName: shopData.name,
+          currency: shopData.currency,
+        };
+        existing.credentials = encryptedCreds;
+        existing.status = ChannelStatus.ACTIVE;
+        existing.lastSyncAt = new Date();
+        connection = await existing.save();
+      } else {
+        connection = await ChannelConnection.create({
+          organizationId: req.tenantId,
+          channelType: ChannelType.SHOPIFY,
+          name: storeDisplayName,
+          config: {
+            storeDomain: cleanShop,
+            shopDomain: cleanShop,
+            shopName: shopData.name,
+            currency: shopData.currency || 'USD',
+          },
+          credentials: encryptedCreds,
+          status: ChannelStatus.ACTIVE,
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          ...redactSecrets(connection.toObject()),
+          _id: connection._id.toString(),
+          id: connection._id.toString(),
+        },
+      });
+    } catch (err: any) {
+      const errDetail = err.response?.data?.error_description || err.response?.data?.errors || err.message;
+      return res.status(400).json({
+        success: false,
+        error: { message: errDetail || 'Failed to exchange Shopify authorization code' },
+      });
+    }
+  }
 }
+
 
