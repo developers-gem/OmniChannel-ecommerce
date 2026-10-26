@@ -224,6 +224,20 @@ export class ProductsController {
       const { product, createdVariants } = await runInTransaction(async (session) => {
         const opts = session ? { session } : {};
 
+        const effectiveVariants = Array.isArray(variants) && variants.length > 0
+          ? variants
+          : [
+              {
+                sku: masterSku.toUpperCase().trim(),
+                title: title || 'Standard',
+                barcode: undefined,
+                options: [{ name: 'Option', value: 'Default' }],
+                costPrice: defaultCostPrice || 0,
+                retailPrice: defaultRetailPrice || 0,
+                initialStock: req.body.defaultInitialStock || 0,
+              },
+            ];
+
         // Create Canonical Product
         const [prod] = await CanonicalProduct.create(
           [
@@ -238,7 +252,7 @@ export class ProductsController {
               images: images || [],
               defaultCostPrice: defaultCostPrice || 0,
               defaultRetailPrice: defaultRetailPrice || 0,
-              totalVariants: variants?.length || 1,
+              totalVariants: effectiveVariants.length,
               status: ProductStatus.ACTIVE,
             },
           ],
@@ -248,7 +262,7 @@ export class ProductsController {
         // Create Variants and Initial Inventory
         const variantList: any[] = [];
 
-        for (const v of variants) {
+        for (const v of effectiveVariants) {
           const [variant] = await ProductVariant.create(
             [
               {
@@ -598,7 +612,13 @@ export class ProductsController {
   static async publish(req: Request, res: Response) {
     try {
       const { id } = req.params;
-      const { channelConnectionId, channelConnectionIds, forceRepublish } = req.body;
+      const {
+        channelConnectionId,
+        channelConnectionIds,
+        forceRepublish,
+        markupPercent,
+        channelMarkups,
+      } = req.body;
 
       const product = await CanonicalProduct.findOne({
         _id: id,
@@ -679,20 +699,30 @@ export class ProductsController {
       const results: any[] = [];
 
       for (const conn of connections) {
+        const chIdStr = conn._id.toString();
+        const feePercent = typeof channelMarkups?.[chIdStr] === 'number'
+          ? channelMarkups[chIdStr]
+          : (typeof markupPercent === 'number' ? markupPercent : 0);
+
         if (conn.channelType === ChannelType.SHOPIFY) {
           try {
             const { domain, token } = ShopifyService.getCredentials(conn);
 
-            // Format variants with current stock
+            // Format variants with current stock and adjusted retail price (platform price + channel platform charge)
             const variantPayload = variants.map((v) => {
               const inv = inventoryItems.find(
                 (i) => i.canonicalVariantId.toString() === v._id.toString()
               );
+              const basePrice = typeof v.retailPrice === 'number' && !isNaN(v.retailPrice) ? v.retailPrice : (product.defaultRetailPrice || 0);
+              const finalPrice = feePercent > 0
+                ? Math.round(basePrice * (1 + feePercent / 100) * 100) / 100
+                : basePrice;
+
               return {
                 title: v.title,
                 sku: v.sku,
                 barcode: v.barcode,
-                retailPrice: v.retailPrice,
+                retailPrice: finalPrice,
                 compareAtPrice: v.compareAtPrice,
                 weight: v.weight,
                 stockQuantity: inv?.trackedStock || 0,
@@ -751,14 +781,17 @@ export class ProductsController {
                 const srcVariant = variants[i];
                 const shVariant = shopifyProduct.variants?.[i] || shopifyProduct.variants?.[0];
                 if (shVariant) {
-                  if (typeof srcVariant.retailPrice === 'number') {
-                    await ShopifyService.updateVariantPrice(
-                      domain,
-                      token,
-                      String(shVariant.id),
-                      srcVariant.retailPrice
-                    );
-                  }
+                  const basePrice = typeof srcVariant.retailPrice === 'number' ? srcVariant.retailPrice : (product.defaultRetailPrice || 0);
+                  const finalPrice = feePercent > 0
+                    ? Math.round(basePrice * (1 + feePercent / 100) * 100) / 100
+                    : basePrice;
+
+                  await ShopifyService.updateVariantPrice(
+                    domain,
+                    token,
+                    String(shVariant.id),
+                    finalPrice
+                  );
                   const inv = inventoryItems.find(
                     (invItem) =>
                       invItem.canonicalVariantId.toString() === srcVariant._id.toString()
@@ -887,11 +920,16 @@ export class ProductsController {
                 .map((img: any) => (typeof img === 'string' ? img : img.url))
                 .filter(Boolean);
 
+              const basePrice = typeof platformVariant.retailPrice === 'number' ? platformVariant.retailPrice : (product.defaultRetailPrice || 0);
+              const finalPrice = feePercent > 0
+                ? Math.round(basePrice * (1 + feePercent / 100) * 100) / 100
+                : basePrice;
+
               const success = await EbayService.setInventoryItem(host, token, platformVariant.sku, {
                 title: variantTitle,
                 description: product.description || product.title,
                 quantity: stock,
-                price: platformVariant.retailPrice,
+                price: finalPrice,
                 images,
               });
 
@@ -909,7 +947,7 @@ export class ProductsController {
                     title: variantTitle,
                     sku: platformVariant.sku,
                     barcode: platformVariant.barcode || '',
-                    price: platformVariant.retailPrice,
+                    price: finalPrice,
                     inventoryQuantity: stock,
                     status: ChannelProductStatus.ACTIVE,
                     syncStatus: SyncStatus.SYNCED,
@@ -917,7 +955,7 @@ export class ProductsController {
                     rawPayload: {
                       sku: platformVariant.sku,
                       title: variantTitle,
-                      price: platformVariant.retailPrice,
+                      price: finalPrice,
                       quantity: stock,
                     },
                   },

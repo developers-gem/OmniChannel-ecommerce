@@ -27,6 +27,7 @@ export const CreateProductSchema = z.object({
   tags: z.array(z.string()).optional(),
   defaultCostPrice: z.number().nonnegative().default(0),
   defaultRetailPrice: z.number().nonnegative().default(0),
+  defaultInitialStock: z.number().int().nonnegative().default(0).optional(),
   variants: z.array(
     z.object({
       sku: z.string().min(1),
@@ -38,7 +39,7 @@ export const CreateProductSchema = z.object({
       compareAtPrice: z.number().optional(),
       initialStock: z.number().int().nonnegative().default(0),
     })
-  ).min(1, 'At least one variant is required'),
+  ).optional().default([]),
 });
 
 export const UpdateInventorySchema = z.object({

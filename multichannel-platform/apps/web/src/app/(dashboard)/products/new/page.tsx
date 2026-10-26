@@ -22,6 +22,8 @@ import {
   ExternalLink,
   ShieldCheck,
   Sparkles,
+  Percent,
+  Calculator,
 } from 'lucide-react';
 import { useCurrency } from '@/lib/currency';
 
@@ -38,9 +40,18 @@ export default function AddProductPage() {
     description: 'High-performance over-ear headphones with 40-hour battery life and fast charging.',
     defaultCostPrice: 45.0,
     defaultRetailPrice: 129.99,
+    defaultInitialStock: 100,
   });
 
-  const [variants, setVariants] = useState([
+  const [variants, setVariants] = useState<Array<{
+    sku: string;
+    barcode?: string;
+    title: string;
+    options: Array<{ name: string; value: string }>;
+    costPrice: number;
+    retailPrice: number;
+    initialStock: number;
+  }>>([
     {
       sku: 'TECH-ANC-100-BLK',
       barcode: '850012345678',
@@ -63,6 +74,10 @@ export default function AddProductPage() {
 
   const [error, setError] = useState<string | null>(null);
   const [isSubmittingOnly, setIsSubmittingOnly] = useState(false);
+
+  // Platform charges / markups per channel
+  const [channelMarkups, setChannelMarkups] = useState<Record<string, number>>({});
+  const [customMarkupInputs, setCustomMarkupInputs] = useState<Record<string, string>>({});
 
   // Fetch connected channels
   const { data: channels, isLoading: isLoadingChannels } = useQuery({
@@ -97,15 +112,44 @@ export default function AddProductPage() {
     errorText?: string;
   } | null>(null);
 
-  // Pre-select active channels once loaded
+  // Pre-select active channels & set default platform charges (Shopify=5%, eBay=15%, Amazon=15%, default=10%)
   useEffect(() => {
     if (activeChannels.length > 0 && !channelsInitialized) {
       setSelectedChannelIds(
         activeChannels.map((c: any) => c._id?._id || c._id?.id || c._id)
       );
+
+      setChannelMarkups((prev) => {
+        const next = { ...prev };
+        for (const ch of activeChannels) {
+          const chId = ch._id?._id || ch._id?.id || ch._id;
+          if (next[chId] === undefined) {
+            const type = (ch.channelType || '').toUpperCase();
+            if (type === 'SHOPIFY') next[chId] = 5;
+            else if (type === 'EBAY') next[chId] = 15;
+            else if (type === 'AMAZON') next[chId] = 15;
+            else next[chId] = 10;
+          }
+        }
+        return next;
+      });
+
       setChannelsInitialized(true);
     }
   }, [activeChannels, channelsInitialized]);
+
+  // Base platform retail price used for calculations
+  const basePlatformPrice = useMemo(() => {
+    if (variants.length > 0) {
+      const firstPrice = variants[0]?.retailPrice;
+      if (typeof firstPrice === 'number' && !isNaN(firstPrice) && firstPrice >= 0) {
+        return firstPrice;
+      }
+    }
+    return typeof formData.defaultRetailPrice === 'number' && !isNaN(formData.defaultRetailPrice)
+      ? formData.defaultRetailPrice
+      : 0;
+  }, [variants, formData.defaultRetailPrice]);
 
   const toggleChannelSelection = (id: string) => {
     setSelectedChannelIds((prev) =>
@@ -124,23 +168,29 @@ export default function AddProductPage() {
   };
 
   const addVariant = () => {
-    setVariants([
-      ...variants,
+    const nextIdx = variants.length + 1;
+    setVariants((prev) => [
+      ...prev,
       {
-        sku: `${formData.masterSku}-VAR-${variants.length + 1}`,
+        sku: `${formData.masterSku || 'SKU'}-VAR-${nextIdx}`,
         barcode: '',
-        title: `Variant ${variants.length + 1}`,
+        title: `Variant ${nextIdx}`,
         options: [{ name: 'Option', value: 'Default' }],
-        costPrice: formData.defaultCostPrice,
-        retailPrice: formData.defaultRetailPrice,
-        initialStock: 25,
+        costPrice: formData.defaultCostPrice || 0,
+        retailPrice: formData.defaultRetailPrice || 0,
+        initialStock: formData.defaultInitialStock || 50,
       },
     ]);
   };
 
+  // Remove individual variant (allows deleting all variants)
   const removeVariant = (index: number) => {
-    if (variants.length <= 1) return;
-    setVariants(variants.filter((_, i) => i !== index));
+    setVariants((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  // Clear all variants (switches product to Simple Product mode)
+  const removeAllVariants = () => {
+    setVariants([]);
   };
 
   const updateVariant = (index: number, field: string, val: any) => {
@@ -157,6 +207,7 @@ export default function AddProductPage() {
           icon: '🛍️',
           bg: 'bg-emerald-950/80 text-emerald-400 border-emerald-800/80',
           borderActive: 'border-emerald-500 bg-emerald-950/20 shadow-emerald-500/10',
+          defaultFee: 5,
         };
       case 'EBAY':
         return {
@@ -164,6 +215,7 @@ export default function AddProductPage() {
           icon: '🏷️',
           bg: 'bg-amber-950/80 text-amber-400 border-amber-800/80',
           borderActive: 'border-amber-500 bg-amber-950/20 shadow-amber-500/10',
+          defaultFee: 15,
         };
       case 'AMAZON':
         return {
@@ -171,6 +223,7 @@ export default function AddProductPage() {
           icon: '📦',
           bg: 'bg-yellow-950/80 text-yellow-400 border-yellow-800/80',
           borderActive: 'border-yellow-500 bg-yellow-950/20 shadow-yellow-500/10',
+          defaultFee: 15,
         };
       default:
         return {
@@ -178,6 +231,7 @@ export default function AddProductPage() {
           icon: '🌐',
           bg: 'bg-purple-950/80 text-purple-400 border-purple-800/80',
           borderActive: 'border-purple-500 bg-purple-950/20 shadow-purple-500/10',
+          defaultFee: 10,
         };
     }
   };
@@ -191,21 +245,38 @@ export default function AddProductPage() {
       setError('Master SKU is required.');
       return false;
     }
-    if (!variants || variants.length === 0) {
-      setError('At least one product variant is required.');
-      return false;
-    }
-    for (let i = 0; i < variants.length; i++) {
-      const v = variants[i];
-      if (!v.sku?.trim()) {
-        setError(`Variant ${i + 1} (${v.title || 'Untitled'}) must have a valid SKU.`);
+
+    if (variants.length === 0) {
+      if (
+        typeof formData.defaultRetailPrice !== 'number' ||
+        isNaN(formData.defaultRetailPrice) ||
+        formData.defaultRetailPrice < 0
+      ) {
+        setError('Please enter a valid Platform Retail Price (cannot be negative).');
         return false;
       }
-      if (typeof v.retailPrice !== 'number' || isNaN(v.retailPrice) || v.retailPrice < 0) {
-        setError(`Variant ${i + 1} (${v.sku}) must have a valid Retail Price.`);
+      if (
+        typeof formData.defaultInitialStock !== 'number' ||
+        isNaN(formData.defaultInitialStock) ||
+        formData.defaultInitialStock < 0
+      ) {
+        setError('Please enter a valid Initial Stock Quantity (0 or higher).');
         return false;
       }
+    } else {
+      for (let i = 0; i < variants.length; i++) {
+        const v = variants[i];
+        if (!v.sku?.trim()) {
+          setError(`Variant ${i + 1} (${v.title || 'Untitled'}) must have a valid SKU.`);
+          return false;
+        }
+        if (typeof v.retailPrice !== 'number' || isNaN(v.retailPrice) || v.retailPrice < 0) {
+          setError(`Variant ${i + 1} (${v.sku}) must have a valid Retail Price.`);
+          return false;
+        }
+      }
     }
+
     setError(null);
     return true;
   };
@@ -221,18 +292,22 @@ export default function AddProductPage() {
         costPrice: typeof v.costPrice === 'number' && !isNaN(v.costPrice) && v.costPrice >= 0 ? v.costPrice : 0,
         initialStock: typeof v.initialStock === 'number' && !isNaN(v.initialStock) && v.initialStock >= 0 ? Math.floor(v.initialStock) : 0,
       }));
-      const payload = { ...formData, variants: cleanVariants };
+      const payload = {
+        ...formData,
+        defaultInitialStock: Math.floor(formData.defaultInitialStock || 0),
+        variants: cleanVariants,
+      };
       await api.post('/products', payload);
       queryClient.invalidateQueries({ queryKey: ['canonical-products'] });
       queryClient.invalidateQueries({ queryKey: ['product-mappings'] });
       router.push('/products');
     } catch (err: any) {
       setIsSubmittingOnly(false);
-      setError(err.message || 'Failed to create master product');
+      setError(err?.response?.data?.error?.message || err.message || 'Failed to create master product');
     }
   };
 
-  // Push to Selected Channels Flow
+  // Push to Selected Channels Flow with Channel-specific Platform Charges
   const handlePushToChannels = async (targetChannelIds: string[]) => {
     if (!validateForm()) return;
 
@@ -273,7 +348,11 @@ export default function AddProductPage() {
         costPrice: typeof v.costPrice === 'number' && !isNaN(v.costPrice) && v.costPrice >= 0 ? v.costPrice : 0,
         initialStock: typeof v.initialStock === 'number' && !isNaN(v.initialStock) && v.initialStock >= 0 ? Math.floor(v.initialStock) : 0,
       }));
-      const payload = { ...formData, variants: cleanVariants };
+      const payload = {
+        ...formData,
+        defaultInitialStock: Math.floor(formData.defaultInitialStock || 0),
+        variants: cleanVariants,
+      };
       const createRes: any = await api.post('/products', payload);
       const created = createRes.data;
 
@@ -287,17 +366,19 @@ export default function AddProductPage() {
           : null
       );
 
-      // Step 2: Push to each selected channel sequentially
+      // Step 2: Push to each selected channel sequentially with platform markup
       const updatedResults = [...initialSteps];
 
       for (let i = 0; i < targetChannels.length; i++) {
         const ch = targetChannels[i];
         const chId = ch._id?._id || ch._id?.id || ch._id;
+        const badge = getChannelBadge(ch.channelType);
+        const feePercent = channelMarkups[chId] !== undefined ? channelMarkups[chId] : badge.defaultFee;
 
         updatedResults[i] = {
           ...updatedResults[i],
           status: 'in_progress',
-          message: `Pushing variants and stock to ${ch.name}...`,
+          message: `Pushing to ${ch.name} with ${feePercent}% platform charges...`,
         };
         setPushProgress((prev) => (prev ? { ...prev, results: [...updatedResults] } : null));
 
@@ -305,6 +386,8 @@ export default function AddProductPage() {
           const pubRes: any = await api.post(`/products/${created._id}/publish`, {
             channelConnectionId: chId,
             forceRepublish: true,
+            markupPercent: feePercent,
+            channelMarkups: { [chId]: feePercent },
           });
 
           updatedResults[i] = {
@@ -358,7 +441,7 @@ export default function AddProductPage() {
           ? {
               ...prev,
               stage: 'error',
-              errorText: err.message || 'Failed to create master canonical product',
+              errorText: err?.response?.data?.error?.message || err.message || 'Failed to create master canonical product',
             }
           : null
       );
@@ -388,7 +471,7 @@ export default function AddProductPage() {
           <div>
             <h1 className="text-2xl font-bold tracking-tight text-white">Create Canonical Product</h1>
             <p className="text-xs text-slate-400 mt-0.5">
-              Defines internal master specifications and multi-channel variants
+              Defines internal master specifications, platform pricing, and multi-channel publication
             </p>
           </div>
         </div>
@@ -402,11 +485,24 @@ export default function AddProductPage() {
       )}
 
       <form onSubmit={handleSubmit} className="space-y-6">
-        {/* Basic Details Card */}
+        {/* PRODUCT CORE ATTRIBUTES */}
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
-          <h2 className="text-sm font-bold text-white uppercase tracking-wider text-slate-300">
-            Product Core Attributes
-          </h2>
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-bold text-white uppercase tracking-wider text-slate-300">
+              Product Core Attributes
+            </h2>
+            {variants.length === 0 ? (
+              <span className="text-[11px] font-semibold text-emerald-400 bg-emerald-950/60 border border-emerald-800/60 px-2.5 py-1 rounded-full flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>Simple Product (No Variants)</span>
+              </span>
+            ) : (
+              <span className="text-[11px] font-semibold text-brand-400 bg-brand-950/60 border border-brand-800/60 px-2.5 py-1 rounded-full flex items-center gap-1.5">
+                <Layers className="w-3.5 h-3.5" />
+                <span>{variants.length} Variant(s) Active</span>
+              </span>
+            )}
+          </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
@@ -460,10 +556,114 @@ export default function AddProductPage() {
                 className="mt-1 w-full px-4 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-white text-xs focus:ring-2 focus:ring-brand-500 outline-none"
               />
             </div>
+
+            {/* DYNAMIC: When user deletes all variants, display Platform Price & Stock right here */}
+            {variants.length === 0 ? (
+              <div className="md:col-span-2 mt-2 pt-4 border-t border-slate-800">
+                <div className="bg-gradient-to-r from-brand-950/40 to-slate-800/40 border border-brand-800/50 rounded-xl p-4 space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-brand-300 font-bold text-xs uppercase tracking-wider">
+                      <Sparkles className="w-4 h-4 text-brand-400" />
+                      <span>Platform Retail Price & Initial Stock (Master Base)</span>
+                    </div>
+                    <span className="text-[11px] text-brand-400 font-mono bg-brand-950/60 border border-brand-700/50 px-2 py-0.5 rounded-md self-start sm:self-auto">
+                      Our Platform Price
+                    </span>
+                  </div>
+
+                  <p className="text-xs text-slate-400">
+                    All product variants have been removed. Configure our internal platform price and initial warehouse stock here. Store prices on Shopify or eBay will calculate automatically based on platform charges.
+                  </p>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-200">
+                        Platform Retail Price ({symbol}) *
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        required
+                        value={isNaN(formData.defaultRetailPrice) ? '' : formData.defaultRetailPrice}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          setFormData({ ...formData, defaultRetailPrice: isNaN(val) ? 0 : val });
+                        }}
+                        placeholder="0.00"
+                        className="mt-1 w-full px-3.5 py-2.5 rounded-xl bg-slate-800 border border-brand-600/50 text-white text-xs font-mono font-bold focus:ring-2 focus:ring-brand-500 outline-none"
+                      />
+                      <span className="text-[10px] text-slate-400 mt-1 block">
+                        Our platform catalog base price
+                      </span>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-200">
+                        Initial Stock Quantity *
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        required
+                        value={isNaN(formData.defaultInitialStock) ? '' : formData.defaultInitialStock}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value, 10);
+                          setFormData({ ...formData, defaultInitialStock: isNaN(val) ? 0 : Math.max(0, val) });
+                        }}
+                        placeholder="0"
+                        className="mt-1 w-full px-3.5 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-white text-xs font-mono focus:ring-2 focus:ring-brand-500 outline-none"
+                      />
+                      <span className="text-[10px] text-slate-400 mt-1 block">
+                        Available warehouse quantity
+                      </span>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-200">
+                        Unit Cost Price ({symbol})
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        value={isNaN(formData.defaultCostPrice) ? '' : formData.defaultCostPrice}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          setFormData({ ...formData, defaultCostPrice: isNaN(val) ? 0 : val });
+                        }}
+                        placeholder="0.00"
+                        className="mt-1 w-full px-3.5 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-white text-xs font-mono focus:ring-2 focus:ring-brand-500 outline-none"
+                      />
+                      <span className="text-[10px] text-slate-400 mt-1 block">
+                        COGS / Supplier cost
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="md:col-span-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-3 rounded-xl bg-slate-800/40 border border-slate-800 text-xs text-slate-400">
+                <div className="flex items-center gap-2">
+                  <Layers className="w-4 h-4 text-brand-400 shrink-0" />
+                  <span>
+                    Price and stock are managed per variant below ({variants.length} variant{variants.length > 1 ? 's' : ''}).
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={removeAllVariants}
+                  className="text-[11px] text-amber-400 hover:text-amber-300 font-semibold underline cursor-pointer shrink-0"
+                >
+                  Delete all variants to set price & stock here
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Variants Section */}
+        {/* PRODUCT VARIANTS & INITIAL STOCK */}
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
           <div className="flex items-center justify-between">
             <div>
@@ -471,103 +671,151 @@ export default function AddProductPage() {
                 Product Variants & Initial Stock
               </h2>
               <p className="text-xs text-slate-400 mt-0.5">
-                Each variant maintains isolated inventory, barcodes, and pricing
+                {variants.length === 0
+                  ? 'No variants active. This product will be created as a Simple Product.'
+                  : 'Each variant maintains isolated inventory, barcodes, and platform pricing'}
               </p>
             </div>
 
-            <button
-              type="button"
-              onClick={addVariant}
-              className="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold px-3 py-1.5 rounded-xl border border-slate-700 transition"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Add Variant</span>
-            </button>
-          </div>
+            <div className="flex items-center gap-2">
+              {variants.length > 0 && (
+                <button
+                  type="button"
+                  onClick={removeAllVariants}
+                  className="flex items-center gap-1.5 bg-red-950/40 hover:bg-red-950/80 text-red-400 hover:text-red-300 text-xs font-semibold px-3 py-1.5 rounded-xl border border-red-800/60 transition cursor-pointer"
+                  title="Remove all variants and configure price & stock directly in Product Core Attributes"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Delete All Variants</span>
+                </button>
+              )}
 
-          <div className="space-y-3">
-            {variants.map((v, idx) => (
-              <div
-                key={idx}
-                className="bg-slate-800/50 border border-slate-800 rounded-xl p-4 grid grid-cols-1 md:grid-cols-6 gap-3 items-center"
+              <button
+                type="button"
+                onClick={addVariant}
+                className="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold px-3 py-1.5 rounded-xl border border-slate-700 transition cursor-pointer"
               >
-                <div className="md:col-span-2">
-                  <label className="block text-[10px] font-semibold text-slate-400 uppercase">
-                    Variant Title
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={v.title}
-                    onChange={(e) => updateVariant(idx, 'title', e.target.value)}
-                    className="mt-1 w-full px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-white text-xs outline-none"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[10px] font-semibold text-slate-400 uppercase">
-                    SKU *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={v.sku}
-                    onChange={(e) => updateVariant(idx, 'sku', e.target.value.toUpperCase())}
-                    className="mt-1 w-full px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-white text-xs font-mono outline-none uppercase"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[10px] font-semibold text-slate-400 uppercase">
-                    Retail Price ({symbol})
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    required
-                    value={isNaN(v.retailPrice) ? '' : v.retailPrice}
-                    onChange={(e) => {
-                      const val = parseFloat(e.target.value);
-                      updateVariant(idx, 'retailPrice', isNaN(val) ? 0 : val);
-                    }}
-                    className="mt-1 w-full px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-white text-xs outline-none"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[10px] font-semibold text-slate-400 uppercase">
-                    Initial Stock
-                  </label>
-                  <input
-                    type="number"
-                    min="0"
-                    required
-                    value={isNaN(v.initialStock) ? '' : v.initialStock}
-                    onChange={(e) => {
-                      const val = parseInt(e.target.value, 10);
-                      updateVariant(idx, 'initialStock', isNaN(val) ? 0 : Math.max(0, val));
-                    }}
-                    className="mt-1 w-full px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-white text-xs font-mono outline-none"
-                  />
-                </div>
-
-                <div className="flex items-end justify-end">
-                  <button
-                    type="button"
-                    disabled={variants.length <= 1}
-                    onClick={() => removeVariant(idx)}
-                    className="p-2 text-slate-400 hover:text-red-400 disabled:opacity-30 transition"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-            ))}
+                <Plus className="w-3.5 h-3.5" />
+                <span>Add Variant</span>
+              </button>
+            </div>
           </div>
+
+          {variants.length === 0 ? (
+            <div className="bg-slate-800/30 border border-dashed border-slate-700/80 rounded-xl p-8 text-center space-y-3">
+              <div className="w-12 h-12 rounded-2xl bg-amber-950/50 border border-amber-800/60 flex items-center justify-center mx-auto text-amber-400">
+                <Boxes className="w-6 h-6" />
+              </div>
+              <div className="space-y-1">
+                <div className="text-sm font-bold text-white">
+                  Simple Product Mode Active (0 Variants)
+                </div>
+                <p className="text-xs text-slate-400 max-w-lg mx-auto leading-relaxed">
+                  All variants have been deleted. This item will be created as a standalone product using our Platform Price{' '}
+                  <strong className="text-emerald-400 font-mono font-bold">
+                    {format(formData.defaultRetailPrice)}
+                  </strong>{' '}
+                  and warehouse stock of{' '}
+                  <strong className="text-white font-mono font-bold">
+                    {formData.defaultInitialStock} units
+                  </strong>{' '}
+                  configured in Product Core Attributes above.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={addVariant}
+                className="inline-flex items-center gap-2 text-xs font-semibold text-brand-400 hover:text-brand-300 bg-brand-950/40 border border-brand-800/60 px-4 py-2 rounded-xl transition cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Add a Variant (e.g., Color, Size)</span>
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {variants.map((v, idx) => (
+                <div
+                  key={idx}
+                  className="bg-slate-800/50 border border-slate-800 rounded-xl p-4 grid grid-cols-1 md:grid-cols-6 gap-3 items-center"
+                >
+                  <div className="md:col-span-2">
+                    <label className="block text-[10px] font-semibold text-slate-400 uppercase">
+                      Variant Title
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={v.title}
+                      onChange={(e) => updateVariant(idx, 'title', e.target.value)}
+                      className="mt-1 w-full px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-white text-xs outline-none focus:ring-1 focus:ring-brand-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-semibold text-slate-400 uppercase">
+                      SKU *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={v.sku}
+                      onChange={(e) => updateVariant(idx, 'sku', e.target.value.toUpperCase())}
+                      className="mt-1 w-full px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-white text-xs font-mono outline-none uppercase focus:ring-1 focus:ring-brand-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-semibold text-slate-400 uppercase">
+                      Platform Price ({symbol})
+                    </label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      required
+                      value={isNaN(v.retailPrice) ? '' : v.retailPrice}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        updateVariant(idx, 'retailPrice', isNaN(val) ? 0 : val);
+                      }}
+                      className="mt-1 w-full px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-white text-xs font-mono outline-none focus:ring-1 focus:ring-brand-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-semibold text-slate-400 uppercase">
+                      Initial Stock
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      required
+                      value={isNaN(v.initialStock) ? '' : v.initialStock}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value, 10);
+                        updateVariant(idx, 'initialStock', isNaN(val) ? 0 : Math.max(0, val));
+                      }}
+                      className="mt-1 w-full px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-white text-xs font-mono outline-none focus:ring-1 focus:ring-brand-500"
+                    />
+                  </div>
+
+                  <div className="flex items-end justify-end">
+                    <button
+                      type="button"
+                      onClick={() => removeVariant(idx)}
+                      className="p-2 text-slate-400 hover:text-red-400 transition cursor-pointer rounded-lg hover:bg-slate-700/50"
+                      title="Delete this variant"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
-        {/* Multi-Channel Publishing Section */}
+        {/* PUSH DIRECTLY TO SALES CHANNELS WITH PLATFORM CHARGES CALCULATION */}
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
@@ -578,7 +826,7 @@ export default function AddProductPage() {
                 </h3>
               </div>
               <p className="text-xs text-slate-400 mt-1">
-                Select the connected storefronts where this product, its variants, and stock should be published upon creation.
+                Select target storefronts. Store prices calculate dynamically by adding each platform&apos;s charges to our Platform Price ({format(basePlatformPrice)}).
               </p>
             </div>
 
@@ -631,23 +879,30 @@ export default function AddProductPage() {
               </Link>
             </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
               {activeChannels.map((channel: any) => {
                 const chId = channel._id?._id || channel._id?.id || channel._id;
                 const isSelected = selectedChannelIds.includes(chId);
                 const badge = getChannelBadge(channel.channelType);
 
+                // Fee & Price calculation
+                const feePercent = channelMarkups[chId] !== undefined ? channelMarkups[chId] : badge.defaultFee;
+                const feeAmount = (basePlatformPrice * feePercent) / 100;
+                const finalStorePrice = Math.round((basePlatformPrice + feeAmount) * 100) / 100;
+                const customInputVal = customMarkupInputs[chId] ?? '';
+
                 return (
                   <div
                     key={chId}
                     onClick={() => toggleChannelSelection(chId)}
-                    className={`cursor-pointer rounded-xl p-4 border transition select-none flex flex-col justify-between ${
+                    className={`rounded-2xl p-4 border transition select-none flex flex-col justify-between cursor-pointer ${
                       isSelected
                         ? `${badge.borderActive} shadow-lg border-2`
                         : 'bg-slate-800/40 border-slate-800 opacity-75 hover:opacity-100 hover:border-slate-700'
                     }`}
                   >
                     <div>
+                      {/* Store Header */}
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2">
                           <span className="text-xl">{badge.icon}</span>
@@ -680,6 +935,88 @@ export default function AddProductPage() {
                         {channel.config?.storeDomain ||
                           channel.config?.baseUrl ||
                           channel.name}
+                      </div>
+
+                      {/* PLATFORM CHARGES & FINAL PRICE CALCULATION BOX */}
+                      <div
+                        className="mt-3.5 p-3 bg-slate-900/90 border border-slate-800/90 rounded-xl space-y-2.5"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="font-bold text-slate-300 uppercase tracking-wider text-[10px] flex items-center gap-1">
+                            <Percent className="w-3 h-3 text-brand-400" />
+                            <span>Platform Charges</span>
+                          </span>
+                          <span className="font-mono font-bold text-brand-400">
+                            +{feePercent}%
+                          </span>
+                        </div>
+
+                        {/* Charges Presets (0%, 5%, 10%, 12%, 15%, Custom) */}
+                        <div className="flex flex-wrap items-center gap-1">
+                          {[0, 5, 10, 12, 15].map((preset) => {
+                            const isCurrent = feePercent === preset && customInputVal === '';
+                            return (
+                              <button
+                                key={preset}
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setChannelMarkups((prev) => ({ ...prev, [chId]: preset }));
+                                  setCustomMarkupInputs((prev) => ({ ...prev, [chId]: '' }));
+                                }}
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold border transition cursor-pointer ${
+                                  isCurrent
+                                    ? 'bg-brand-600 border-brand-500 text-white shadow-sm'
+                                    : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-white'
+                                }`}
+                              >
+                                {preset}%
+                              </button>
+                            );
+                          })}
+
+                          {/* Custom % input */}
+                          <div className="flex items-center gap-1 ml-auto">
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              step="0.5"
+                              placeholder="Custom"
+                              value={customInputVal}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setCustomMarkupInputs((prev) => ({ ...prev, [chId]: val }));
+                                const parsed = parseFloat(val);
+                                if (!isNaN(parsed) && parsed >= 0) {
+                                  setChannelMarkups((prev) => ({ ...prev, [chId]: parsed }));
+                                }
+                              }}
+                              onClick={(e) => e.stopPropagation()}
+                              className="w-16 px-1.5 py-0.5 rounded text-[10px] font-mono bg-slate-800 border border-slate-700 text-white placeholder-slate-500 outline-none focus:border-brand-500"
+                            />
+                            <span className="text-[10px] text-slate-400">%</span>
+                          </div>
+                        </div>
+
+                        {/* Live Price Breakdown */}
+                        <div className="pt-2 border-t border-slate-800/80 space-y-1">
+                          <div className="flex items-center justify-between text-[10px] text-slate-400">
+                            <span>Platform Price:</span>
+                            <span className="font-mono text-slate-300">{format(basePlatformPrice)}</span>
+                          </div>
+                          <div className="flex items-center justify-between text-[10px] text-slate-400">
+                            <span>Platform Fee (+{feePercent}%):</span>
+                            <span className="font-mono text-amber-400">+{format(feeAmount)}</span>
+                          </div>
+                          <div className="flex items-center justify-between text-xs pt-1 border-t border-slate-800/60">
+                            <span className="font-bold text-white">Final Store Price:</span>
+                            <span className="font-mono font-extrabold text-emerald-400 text-sm">
+                              {format(finalStorePrice)}
+                            </span>
+                          </div>
+                        </div>
                       </div>
                     </div>
 
@@ -768,9 +1105,9 @@ export default function AddProductPage() {
               <div className="flex items-center gap-3 text-slate-400 font-mono">
                 <span>SKU: <strong className="text-white">{formData.masterSku}</strong></span>
                 <span>&bull;</span>
-                <span>{variants.length} Variant(s)</span>
+                <span>{variants.length === 0 ? 'Simple Product (0 Variants)' : `${variants.length} Variant(s)`}</span>
                 <span>&bull;</span>
-                <span>Retail: <strong className="text-emerald-400">{format(formData.defaultRetailPrice)}</strong></span>
+                <span>Platform Price: <strong className="text-emerald-400">{format(basePlatformPrice)}</strong></span>
               </div>
             </div>
 
@@ -785,6 +1122,8 @@ export default function AddProductPage() {
                   const chId = channel._id?._id || channel._id?.id || channel._id;
                   const isSelected = selectedChannelIds.includes(chId);
                   const badge = getChannelBadge(channel.channelType);
+                  const feePercent = channelMarkups[chId] !== undefined ? channelMarkups[chId] : badge.defaultFee;
+                  const finalPrice = Math.round((basePlatformPrice * (1 + feePercent / 100)) * 100) / 100;
 
                   return (
                     <div
@@ -805,9 +1144,13 @@ export default function AddProductPage() {
                               {badge.label}
                             </span>
                           </div>
-                          <span className="text-[11px] text-slate-400 font-mono mt-0.5 block">
-                            {channel.config?.storeDomain || channel.name}
-                          </span>
+                          <div className="flex items-center gap-2 text-[11px] text-slate-400 font-mono mt-0.5">
+                            <span>{channel.config?.storeDomain || channel.name}</span>
+                            <span>&bull;</span>
+                            <span className="text-amber-400 font-semibold">+{feePercent}% charge</span>
+                            <span>&bull;</span>
+                            <span className="text-emerald-400 font-bold">Store Price: {format(finalPrice)}</span>
+                          </div>
                         </div>
                       </div>
 
@@ -832,7 +1175,7 @@ export default function AddProductPage() {
                 <button
                   type="button"
                   onClick={selectAllChannels}
-                  className="text-xs text-brand-400 hover:text-brand-300 font-medium"
+                  className="text-xs text-brand-400 hover:text-brand-300 font-medium cursor-pointer"
                 >
                   Select All
                 </button>
@@ -840,7 +1183,7 @@ export default function AddProductPage() {
                 <button
                   type="button"
                   onClick={deselectAllChannels}
-                  className="text-xs text-slate-400 hover:text-slate-300 font-medium"
+                  className="text-xs text-slate-400 hover:text-slate-300 font-medium cursor-pointer"
                 >
                   Clear
                 </button>
@@ -850,7 +1193,7 @@ export default function AddProductPage() {
                 <button
                   type="button"
                   onClick={() => setIsChannelModalOpen(false)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white"
+                  className="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white cursor-pointer"
                 >
                   Cancel
                 </button>
