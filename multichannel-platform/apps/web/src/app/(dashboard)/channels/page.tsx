@@ -37,7 +37,11 @@ export default function ChannelsPage() {
   const [shopifyAuthMode, setShopifyAuthMode] = useState<'oauth' | 'manual'>('oauth');
   const [isOAuthRedirecting, setIsOAuthRedirecting] = useState(false);
   const [isShopifyOAuthRedirecting, setIsShopifyOAuthRedirecting] = useState(false);
+  const [shopifyClientId, setShopifyClientId] = useState('');
+  const [shopifyClientSecret, setShopifyClientSecret] = useState('');
   const [pastedCodeOrUrl, setPastedCodeOrUrl] = useState('');
+
+
   const [isVerifyingEbayCode, setIsVerifyingEbayCode] = useState(false);
   const [oauthWindowOpened, setOauthWindowOpened] = useState(false);
   const [shopifyOauthWindowOpened, setShopifyOauthWindowOpened] = useState(false);
@@ -373,9 +377,15 @@ export default function ChannelsPage() {
       setModalError(null);
       const targetName = storeName.trim() || domain.replace('.myshopify.com', '');
 
-      const res: any = await api.get(
-        `/channels/shopify/auth-url?shop=${encodeURIComponent(domain)}&name=${encodeURIComponent(targetName)}`
-      );
+      const res: any = await api.get('/channels/shopify/auth-url', {
+        params: {
+          shop: domain,
+          name: targetName,
+          clientId: shopifyClientId.trim(),
+          clientSecret: shopifyClientSecret.trim(),
+        },
+      });
+
 
       if (res?.data?.url) {
         const popup = window.open(
@@ -1009,6 +1019,33 @@ export default function ChannelsPage() {
                         </div>
                       </div>
 
+                      <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-700/60">
+                        <div>
+                          <label className="block text-[10px] font-semibold text-slate-300 mb-1">
+                            Shopify App Client ID
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="Client ID"
+                            value={shopifyClientId}
+                            onChange={(e) => setShopifyClientId(e.target.value)}
+                            className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-white text-[11px] outline-none focus:border-emerald-500 font-mono"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-semibold text-slate-300 mb-1">
+                            Client Secret
+                          </label>
+                          <input
+                            type="password"
+                            placeholder="Client Secret"
+                            value={shopifyClientSecret}
+                            onChange={(e) => setShopifyClientSecret(e.target.value)}
+                            className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-white text-[11px] outline-none focus:border-emerald-500 font-mono"
+                          />
+                        </div>
+                      </div>
+
                       <button
                         type="button"
                         onClick={handleShopifyOAuthConnect}
@@ -1034,6 +1071,7 @@ export default function ChannelsPage() {
                       <p className="text-[10px] text-slate-500 text-center">
                         Opens official Shopify authorization for <span className="text-slate-300 font-mono">{storeDomain || 'your-store.myshopify.com'}</span>.
                       </p>
+
                     </div>
                   ) : (
                     <div>

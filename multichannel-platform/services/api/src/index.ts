@@ -14,6 +14,8 @@ import { config } from './config';
 import { connectDatabase } from './database';
 import { logger } from './utils/logger';
 import { errorHandler } from './middlewares/errorHandler';
+// Reloaded with Shopify OAuth configuration
+
 
 // Route imports
 import authRoutes from './modules/auth/auth.routes';
