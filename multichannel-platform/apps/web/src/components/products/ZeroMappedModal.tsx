@@ -26,12 +26,14 @@ interface ZeroMappedModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSuccessNotification: (message: string) => void;
+  initialFilter?: 'all' | 'zero_only' | 'missing_ebay' | 'missing_shopify' | 'unmapped_only';
 }
 
 export function ZeroMappedModal({
   isOpen,
   onClose,
   onSuccessNotification,
+  initialFilter = 'zero_only',
 }: ZeroMappedModalProps) {
   const queryClient = useQueryClient();
   const { format } = useCurrency();
@@ -39,7 +41,14 @@ export function ZeroMappedModal({
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState<
     'all' | 'zero_only' | 'missing_ebay' | 'missing_shopify' | 'unmapped_only'
-  >('all');
+  >(initialFilter || 'zero_only');
+
+  // Synchronize filter when modal opens
+  useEffect(() => {
+    if (isOpen) {
+      setFilterType(initialFilter || 'zero_only');
+    }
+  }, [isOpen, initialFilter]);
   const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
   const [productChannelSelections, setProductChannelSelections] = useState<{
     [productId: string]: string[];
@@ -246,13 +255,13 @@ export function ZeroMappedModal({
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-xl font-bold tracking-tight text-white">0-Mapped & Unmapped Products</h2>
+                <h2 className="text-xl font-bold tracking-tight text-white">Catalog Channel Coverage & Store Sync</h2>
                 <span className="bg-amber-950 border border-amber-800/80 text-amber-300 text-xs font-bold px-2.5 py-0.5 rounded-full">
-                  {filteredProducts.length} Products Found
+                  {filteredProducts.length} Products
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
-                Review products with 0 active mappings or unmapped from stores. Select target channels per row or push in bulk at once.
+                Review products with 0 store mappings or products missing from connected channels. Select target channels to publish and sync.
               </p>
             </div>
           </div>
@@ -369,7 +378,7 @@ export function ZeroMappedModal({
               >
                 {areAllSelected && <Check className="w-2.5 h-2.5 text-white" />}
               </div>
-              <span>{areAllSelected ? 'Deselect All' : 'Select All 0-Mapped'}</span>
+              <span>{areAllSelected ? 'Deselect All' : `Select All (${filteredProducts.length})`}</span>
             </button>
           </div>
 
@@ -386,21 +395,21 @@ export function ZeroMappedModal({
               <Sparkles className="w-4 h-4" />
               <span>
                 {bulkPublishMutation.isPending && selectedProductIds.length > 0
-                  ? 'Mapping Selected...'
-                  : `Map Manually Selected Products in One Time (${selectedProductIds.length})`}
+                  ? 'Publishing Selected...'
+                  : `Publish Selected to Stores (${selectedProductIds.length})`}
               </span>
             </button>
 
-            {/* Button 2: Map All Unmapped Products (Master Button) */}
+            {/* Button 2: Publish All to Missing Channels */}
             <button
               type="button"
               onClick={() => setIsMasterChannelModalOpen(true)}
               disabled={filteredProducts.length === 0 || bulkPublishMutation.isPending}
               className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold px-4 py-2 rounded-xl shadow-lg shadow-emerald-600/20 transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-              title="Open channel selection and map ALL unmapped products at once"
+              title="Open channel selection and publish products to missing channels at once"
             >
               <Share2 className="w-4 h-4" />
-              <span>Mapped All the Un-Mapped Products ({filteredProducts.length})</span>
+              <span>Publish All to Missing Channels ({filteredProducts.length})</span>
             </button>
           </div>
         </div>
@@ -421,7 +430,7 @@ export function ZeroMappedModal({
                 <th className="py-3.5 px-4">Master SKU</th>
                 <th className="py-3.5 px-4">Product Name & Brand</th>
                 <th className="py-3.5 px-4 text-center">Total Stock</th>
-                <th className="py-3.5 px-4">Un-mapped From (All Channels)</th>
+                <th className="py-3.5 px-4">Channel Gap / Status</th>
                 <th className="py-3.5 px-4 text-right">Price</th>
                 <th className="py-3.5 px-4 text-center">Status</th>
                 <th className="py-3.5 px-4">Select Channels to Map</th>
@@ -509,7 +518,7 @@ export function ZeroMappedModal({
                         </span>
                       </td>
 
-                      {/* Un-mapped From (All Channels Name) */}
+                      {/* Channel Gap / Status */}
                       <td className="py-4 px-4">
                         {unmappedStores.length > 0 ? (
                           <div className="flex flex-col gap-1">
@@ -522,17 +531,38 @@ export function ZeroMappedModal({
                                   title={`Unmapped: ${um.unmappedReason}`}
                                 >
                                   <span>{badge.icon}</span>
-                                  <span>{um.channelName}</span>
+                                  <span>Unmapped from {um.channelName}</span>
                                 </div>
                               );
                             })}
                           </div>
                         ) : p.isZeroMapped ? (
-                          <span className="text-[11px] text-slate-400 italic">
-                            0 mapped (Never linked to any store)
+                          <span className="inline-flex items-center gap-1 text-[11px] text-red-400 font-semibold bg-red-950/60 border border-red-800/60 px-2 py-0.5 rounded">
+                            <AlertCircle className="w-3 h-3 shrink-0" />
+                            <span>0-Mapped (Not on any store)</span>
                           </span>
+                        ) : p.missingChannels && p.missingChannels.length > 0 ? (
+                          <div className="flex flex-col gap-1">
+                            <span className="text-[10px] text-amber-400 font-semibold flex items-center gap-1">
+                              <span>Missing on:</span>
+                            </span>
+                            <div className="flex flex-wrap gap-1">
+                              {p.missingChannels.map((mc: any, idx: number) => {
+                                const badge = getChannelBadge(mc.channelType);
+                                return (
+                                  <span
+                                    key={idx}
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-950/60 text-amber-300 border border-amber-800/60"
+                                  >
+                                    <span>{badge.icon}</span>
+                                    <span>{mc.channelName}</span>
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          </div>
                         ) : (
-                          <span className="text-[11px] text-slate-400">No unmapped records</span>
+                          <span className="text-[11px] text-emerald-400 font-medium">✓ Fully Mapped</span>
                         )}
                       </td>
 
@@ -647,12 +677,39 @@ export function ZeroMappedModal({
                       <div className="w-12 h-12 rounded-2xl bg-emerald-950/60 border border-emerald-800/80 flex items-center justify-center text-emerald-400">
                         <CheckCircle2 className="w-6 h-6" />
                       </div>
-                      <p className="font-bold text-slate-200 text-base">All Products Are Mapped!</p>
-                      <p className="text-xs text-slate-400">
-                        {searchTerm
-                          ? 'No 0-mapped products matched your search term.'
-                          : 'Every product in your catalog is actively mapped to connected sales channels.'}
+                      <p className="font-bold text-slate-200 text-base">
+                        {filterType === 'zero_only'
+                          ? '0 Products Found: All Catalog Products Mapped!'
+                          : filterType === 'missing_ebay'
+                          ? 'No Products Missing eBay!'
+                          : filterType === 'missing_shopify'
+                          ? 'No Products Missing Shopify!'
+                          : filterType === 'unmapped_only'
+                          ? 'No Previously Disconnected Products!'
+                          : 'All Products Are Fully Mapped!'}
                       </p>
+                      <p className="text-xs text-slate-400">
+                        {filterType === 'zero_only' && productsList.length > 0 ? (
+                          <span>
+                            Every product in your catalog is linked to at least 1 store.{' '}
+                            <strong className="text-amber-400">{productsList.length} products</strong> are missing coverage on other active channels (e.g. eBay).
+                          </span>
+                        ) : searchTerm ? (
+                          'No products matched your search term.'
+                        ) : (
+                          'Every product in your catalog is actively mapped to connected sales channels.'
+                        )}
+                      </p>
+                      {filterType === 'zero_only' && productsList.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setFilterType('all')}
+                          className="mt-2 inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-brand-600 hover:bg-brand-500 text-white shadow-md transition cursor-pointer"
+                        >
+                          <Share2 className="w-3.5 h-3.5" />
+                          <span>View {productsList.length} Products Missing Channels</span>
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -698,8 +755,8 @@ export function ZeroMappedModal({
                   <span>Select Channels to Map All Products</span>
                 </h3>
                 <p className="text-xs text-slate-400 mt-1">
-                  Choose which sales channels you want to push and map all{' '}
-                  <strong className="text-white">{filteredProducts.length}</strong> 0-mapped products to:
+                  Choose which sales channels you want to push and map these{' '}
+                  <strong className="text-white">{filteredProducts.length}</strong> products to:
                 </p>
               </div>
               <button

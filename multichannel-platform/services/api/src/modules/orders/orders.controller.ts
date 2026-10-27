@@ -152,6 +152,39 @@ export class OrdersController {
         lineItemIds: lines.map((l) => l._id),
       });
 
+      // Deduct tracked stock and release reserved stock upon fulfillment
+      for (const line of lines) {
+        if (line.canonicalVariantId) {
+          const invItem = await InventoryItem.findOne({
+            organizationId: req.tenantId,
+            canonicalVariantId: line.canonicalVariantId,
+          });
+
+          if (invItem) {
+            const prevTracked = invItem.trackedStock;
+            invItem.trackedStock = Math.max(0, invItem.trackedStock - line.quantity);
+            invItem.reservedStock = Math.max(0, invItem.reservedStock - line.quantity);
+            invItem.availableToAllocate = Math.max(
+              0,
+              invItem.trackedStock - invItem.reservedStock - invItem.safetyStock
+            );
+            await invItem.save();
+
+            await InventoryMovement.create({
+              organizationId: req.tenantId,
+              canonicalVariantId: line.canonicalVariantId,
+              changeType: InventoryChangeType.ORDER_FULFILLED,
+              quantityChanged: -line.quantity,
+              previousTrackedStock: prevTracked,
+              newTrackedStock: invItem.trackedStock,
+              reason: `Order ${order.orderNumber} fulfilled with tracking ${trackingNumber}`,
+              referenceId: order.orderNumber,
+              performedBy: req.user?.userId,
+            });
+          }
+        }
+      }
+
       order.fulfillmentStatus = OrderFulfillmentStatus.FULFILLED;
       await order.save();
 
@@ -193,8 +226,9 @@ export class OrdersController {
         }
 
         const lines = await OrderLine.find({ orderId: order._id });
+        const wasFulfilled = order.fulfillmentStatus === OrderFulfillmentStatus.FULFILLED;
 
-        // Release reserved stock back into available pool if not yet fulfilled
+        // Release reserved stock back into available pool if not yet fulfilled, OR restock trackedStock if already fulfilled
         for (const line of lines) {
           if (line.canonicalVariantId) {
             const invItem = await InventoryItem.findOne({
@@ -203,7 +237,12 @@ export class OrdersController {
             });
 
             if (invItem) {
-              invItem.reservedStock = Math.max(0, invItem.reservedStock - line.quantity);
+              const prevTracked = invItem.trackedStock;
+              if (wasFulfilled) {
+                invItem.trackedStock += line.quantity;
+              } else {
+                invItem.reservedStock = Math.max(0, invItem.reservedStock - line.quantity);
+              }
               invItem.availableToAllocate = Math.max(
                 0,
                 invItem.trackedStock - invItem.reservedStock - invItem.safetyStock
@@ -213,9 +252,9 @@ export class OrdersController {
               await InventoryMovement.create({
                 organizationId: req.tenantId,
                 canonicalVariantId: line.canonicalVariantId,
-                changeType: InventoryChangeType.ORDER_CANCELLED,
+                changeType: wasFulfilled ? InventoryChangeType.RETURN_RESTOCK : InventoryChangeType.ORDER_CANCELLED,
                 quantityChanged: line.quantity,
-                previousTrackedStock: invItem.trackedStock,
+                previousTrackedStock: prevTracked,
                 newTrackedStock: invItem.trackedStock,
                 reason: `Order ${order.orderNumber} cancelled (${reason || 'Merchant initiated'})`,
                 referenceId: order.orderNumber,

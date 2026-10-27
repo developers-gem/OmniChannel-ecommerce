@@ -41,19 +41,36 @@ export class DashboardController {
       const shopifyProdSet = new Set<string>();
       const ebayProdSet = new Set<string>();
 
-      const shopifyConn = activeChannels.find((c) => c.channelType === 'SHOPIFY');
-      const ebayConn = activeChannels.find((c) => c.channelType === 'EBAY');
+      const shopifyConnIds = new Set(
+        activeChannels
+          .filter((c) => c.channelType === 'SHOPIFY')
+          .map((c) => c._id?.toString())
+          .filter(Boolean)
+      );
+      const ebayConnIds = new Set(
+        activeChannels
+          .filter((c) => c.channelType === 'EBAY')
+          .map((c) => c._id?.toString())
+          .filter(Boolean)
+      );
 
-      const shopifyConnId = shopifyConn?._id?.toString();
-      const ebayConnId = ebayConn?._id?.toString();
+      // Map to track which channels each canonical product is mapped to
+      const prodToChannelMap = new Map<string, Set<string>>();
 
       for (const m of activeMappings) {
         const pId = m.canonicalProductId?.toString();
         const chId = m.channelConnectionId?.toString();
         if (pId) {
           mappedCanonicalIds.add(pId);
-          if (chId === shopifyConnId) shopifyProdSet.add(pId);
-          if (chId === ebayConnId) ebayProdSet.add(pId);
+          if (chId && shopifyConnIds.has(chId)) shopifyProdSet.add(pId);
+          if (chId && ebayConnIds.has(chId)) ebayProdSet.add(pId);
+
+          if (chId) {
+            if (!prodToChannelMap.has(pId)) {
+              prodToChannelMap.set(pId, new Set<string>());
+            }
+            prodToChannelMap.get(pId)!.add(chId);
+          }
         }
       }
 
@@ -61,25 +78,19 @@ export class DashboardController {
 
       let incompleteMappedCount = 0;
       if (activeChannels.length > 1) {
-        const canonicalIds = await CanonicalProduct.find({ organizationId: tenantId }).distinct('_id');
-        for (const cid of canonicalIds) {
-          const cidStr = cid.toString();
-          const mappedToChannels = activeMappings
-            .filter((m) => m.canonicalProductId?.toString() === cidStr)
-            .map((m) => m.channelConnectionId?.toString());
-          const uniqueCh = new Set(mappedToChannels);
-          if (uniqueCh.size > 0 && uniqueCh.size < activeChannels.length) {
+        for (const chSet of prodToChannelMap.values()) {
+          if (chSet.size > 0 && chSet.size < activeChannels.length) {
             incompleteMappedCount++;
           }
         }
       }
 
-      const shopifyListings = shopifyConnId
-        ? allChannelProducts.filter((p) => p.channelConnectionId?.toString() === shopifyConnId).length
-        : 0;
-      const ebayListings = ebayConnId
-        ? allChannelProducts.filter((p) => p.channelConnectionId?.toString() === ebayConnId).length
-        : 0;
+      const shopifyListings = allChannelProducts.filter((p) =>
+        shopifyConnIds.has(p.channelConnectionId?.toString() || '')
+      ).length;
+      const ebayListings = allChannelProducts.filter((p) =>
+        ebayConnIds.has(p.channelConnectionId?.toString() || '')
+      ).length;
 
       const lowStockCount = inventoryItems.filter(
         (i) => i.availableToAllocate <= i.lowStockThreshold

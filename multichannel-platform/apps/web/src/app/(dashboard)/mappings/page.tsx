@@ -126,7 +126,7 @@ export default function MappingPage() {
       queryClient.invalidateQueries({ queryKey: ['unmapped-mappings'] });
       setImportNotification({
         type: 'success',
-        message: data?.data?.message || 'Product listing unmapped and deleted from store',
+        message: data?.message || data?.data?.message || 'Product listing unmapped and deleted from store',
       });
       setTimeout(() => setImportNotification(null), 8000);
     },
@@ -152,7 +152,7 @@ export default function MappingPage() {
       queryClient.invalidateQueries({ queryKey: ['unmapped-mappings'] });
       setImportNotification({
         type: 'success',
-        message: data?.data?.message || 'All listings unmapped and removed from stores',
+        message: data?.message || data?.data?.message || 'All listings unmapped and removed from stores',
       });
       setTimeout(() => setImportNotification(null), 8000);
     },

@@ -44,6 +44,9 @@ export default function ProductsPage() {
 
   // 0-Mapped Products Modal state
   const [isZeroMappedModalOpen, setIsZeroMappedModalOpen] = useState(false);
+  const [zeroMappedInitialFilter, setZeroMappedInitialFilter] = useState<
+    'all' | 'zero_only' | 'missing_ebay' | 'missing_shopify' | 'unmapped_only'
+  >('zero_only');
 
   // Fetch unified catalog & multi-store summary counts
   const { data: summaryResponse } = useQuery({
@@ -356,29 +359,51 @@ export default function ProductsPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          {/* Master Button: 0-Mapped Products */}
+          {/* Button 1: 0-Mapped Products */}
           <button
             type="button"
-            onClick={() => setIsZeroMappedModalOpen(true)}
+            onClick={() => {
+              setZeroMappedInitialFilter('zero_only');
+              setIsZeroMappedModalOpen(true);
+            }}
             className={`flex items-center gap-2 text-white text-xs font-semibold px-3.5 py-2.5 rounded-xl shadow-lg transition cursor-pointer ${
               zeroMappedCount > 0
                 ? 'bg-gradient-to-r from-red-600 to-amber-600 hover:from-red-500 hover:to-amber-500 shadow-red-600/20 animate-pulse'
-                : 'bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 shadow-amber-600/20'
+                : 'bg-gradient-to-r from-slate-800 to-slate-700 hover:from-slate-700 hover:to-slate-600 border border-slate-700 text-slate-300'
             }`}
-            title="View and map all 0-mapped and missing channel products"
+            title="View products with strictly 0 channel mappings across all stores"
           >
-            <Unlink className="w-3.5 h-3.5" />
+            <Unlink className="w-3.5 h-3.5 text-slate-400" />
             <span>0-Mapped Products</span>
             <span
               className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
                 zeroMappedCount > 0
                   ? 'bg-red-950 text-red-300 border-red-700'
-                  : 'bg-amber-950/90 text-amber-300 border-amber-800/80'
+                  : 'bg-slate-900 text-slate-400 border-slate-700'
               }`}
             >
               {zeroMappedCount}
             </span>
           </button>
+
+          {/* Button 2: Missing Channels (shown when products are mapped to some stores, but missing others) */}
+          {incompleteMappedCount > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                setZeroMappedInitialFilter('all');
+                setIsZeroMappedModalOpen(true);
+              }}
+              className="flex items-center gap-2 bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 text-white text-xs font-semibold px-3.5 py-2.5 rounded-xl shadow-lg shadow-amber-600/20 transition cursor-pointer"
+              title={`${incompleteMappedCount} products are on some channels but missing others (e.g. missing eBay). Click to publish.`}
+            >
+              <Share2 className="w-3.5 h-3.5" />
+              <span>Missing Channels</span>
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-950/90 text-amber-300 border border-amber-800/80">
+                {incompleteMappedCount}
+              </span>
+            </button>
+          )}
 
           {/* Replace Import from Shopify with Import from Channels */}
           <button
@@ -474,9 +499,18 @@ export default function ProductsPage() {
           </div>
         </div>
 
-        {/* 0-Mapped & Unmapped Platform Products */}
+        {/* 0-Mapped & Channel Gap Card */}
         <div
-          onClick={() => setIsZeroMappedModalOpen(true)}
+          onClick={() => {
+            if (zeroMappedCount > 0) {
+              setZeroMappedInitialFilter('zero_only');
+            } else if (incompleteMappedCount > 0) {
+              setZeroMappedInitialFilter('all');
+            } else {
+              setZeroMappedInitialFilter('zero_only');
+            }
+            setIsZeroMappedModalOpen(true);
+          }}
           className={`border rounded-2xl p-4 shadow-lg flex items-center justify-between cursor-pointer transition select-none ${
             zeroMappedCount > 0
               ? 'bg-red-950/30 border-red-800/80 hover:bg-red-950/50'
@@ -488,27 +522,31 @@ export default function ProductsPage() {
         >
           <div>
             <span className="text-[10px] uppercase font-bold tracking-wider block text-slate-400">
-              0-Mapped Products
+              {zeroMappedCount > 0 ? '0-Mapped Products' : incompleteMappedCount > 0 ? 'Channel Coverage Gap' : 'Catalog Status'}
             </span>
             <div className="text-xl font-extrabold mt-0.5 flex items-center gap-2">
-              <span className={zeroMappedCount > 0 ? 'text-red-400' : 'text-slate-200'}>
-                {zeroMappedCount} Unmapped
-              </span>
+              {zeroMappedCount > 0 ? (
+                <span className="text-red-400">{zeroMappedCount} 0-Mapped</span>
+              ) : incompleteMappedCount > 0 ? (
+                <span className="text-amber-400">{incompleteMappedCount} Missing Channel</span>
+              ) : (
+                <span className="text-emerald-400">100% Fully Mapped</span>
+              )}
             </div>
             <div className="text-[11px] text-slate-400 mt-0.5 flex items-center gap-1.5">
-              {zeroMappedCount === 0 ? (
+              {zeroMappedCount === 0 && incompleteMappedCount === 0 ? (
                 <span className="text-emerald-400 font-semibold flex items-center gap-1">
                   <Check className="w-3 h-3" />
-                  <span>All products mapped</span>
+                  <span>All products mapped to all stores</span>
+                </span>
+              ) : zeroMappedCount === 0 ? (
+                <span className="text-emerald-400 font-semibold flex items-center gap-1">
+                  <Check className="w-3 h-3" />
+                  <span>All products mapped ({incompleteMappedCount} missing eBay)</span>
                 </span>
               ) : (
-                <span className="text-amber-400 font-semibold">
-                  Added on platform, not on store
-                </span>
-              )}
-              {incompleteMappedCount > 0 && (
-                <span className="text-amber-400 text-[10px]">
-                  ({incompleteMappedCount} missing eBay)
+                <span className="text-red-400 font-semibold">
+                  {zeroMappedCount} added on platform, not on store
                 </span>
               )}
             </div>
@@ -517,10 +555,18 @@ export default function ProductsPage() {
             className={`w-10 h-10 rounded-xl border flex items-center justify-center ${
               zeroMappedCount > 0
                 ? 'bg-red-950/60 border-red-800 text-red-400'
+                : incompleteMappedCount > 0
+                ? 'bg-amber-950/60 border-amber-800 text-amber-400'
                 : 'bg-slate-800 border-slate-700 text-slate-400'
             }`}
           >
-            <Unlink className="w-5 h-5" />
+            {zeroMappedCount > 0 ? (
+              <Unlink className="w-5 h-5" />
+            ) : incompleteMappedCount > 0 ? (
+              <Share2 className="w-5 h-5" />
+            ) : (
+              <Check className="w-5 h-5" />
+            )}
           </div>
         </div>
       </div>
@@ -1234,9 +1280,10 @@ export default function ProductsPage() {
         </div>
       )}
 
-      {/* MODAL 4: 0-Mapped & Unmapped Products Master Modal */}
+      {/* MODAL 4: 0-Mapped & Channel Gap Master Modal */}
       <ZeroMappedModal
         isOpen={isZeroMappedModalOpen}
+        initialFilter={zeroMappedInitialFilter}
         onClose={() => setIsZeroMappedModalOpen(false)}
         onSuccessNotification={(msg) => {
           setNotification({ type: 'success', text: msg });

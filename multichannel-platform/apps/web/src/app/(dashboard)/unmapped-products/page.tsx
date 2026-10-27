@@ -58,7 +58,7 @@ export default function UnmappedProductsPage() {
       queryClient.invalidateQueries({ queryKey: ['mapping-suggestions'] });
       setNotification({
         type: 'success',
-        message: data?.data?.message || 'Product successfully re-mapped and restored to store!',
+        message: data?.message || data?.data?.message || 'Product successfully re-mapped and restored to store!',
       });
       setTimeout(() => setNotification(null), 8000);
     },
@@ -161,16 +161,40 @@ export default function UnmappedProductsPage() {
         </div>
       </div>
 
+      {/* Informational Callout: Difference between Unmapped Products and 0-Mapped Catalog Products */}
+      <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-slate-400">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 shrink-0">
+            <Store className="w-4 h-4" />
+          </div>
+          <div>
+            <span className="font-semibold text-slate-200">What are Unmapped Products?</span>
+            <p className="text-[11px] text-slate-400 mt-0.5">
+              This page tracks products that were explicitly unmapped and removed from external stores (Shopify, eBay). If you are looking for catalog products with 0 channel mappings or products missing on specific channels, visit the{' '}
+              <Link href="/products" className="text-brand-400 hover:text-brand-300 font-semibold underline underline-offset-2">
+                All Products Catalog
+              </Link>.
+            </p>
+          </div>
+        </div>
+        <Link
+          href="/products"
+          className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-semibold text-xs transition"
+        >
+          <span>Catalog</span>
+          <ArrowRight className="w-3.5 h-3.5" />
+        </Link>
+      </div>
+
       {/* Notification Toast */}
       {notification && (
         <div
-          className={`p-4 rounded-xl flex items-center justify-between gap-3 text-xs border shadow-lg ${
-            notification.type === 'success'
-              ? 'bg-emerald-950/80 border-emerald-800 text-emerald-200'
-              : notification.type === 'error'
+          className={`p-4 rounded-xl flex items-center justify-between gap-3 text-xs border shadow-lg ${notification.type === 'success'
+            ? 'bg-emerald-950/80 border-emerald-800 text-emerald-200'
+            : notification.type === 'error'
               ? 'bg-red-950/80 border-red-800 text-red-200'
               : 'bg-slate-800/90 border-slate-700 text-slate-200'
-          }`}
+            }`}
         >
           <div className="flex items-center gap-2.5">
             {notification.type === 'success' ? (
@@ -289,20 +313,19 @@ export default function UnmappedProductsPage() {
                       <td className="py-4 px-4">
                         <div className="flex flex-col gap-1.5">
                           <span
-                            className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold w-fit ${
-                              channelType === 'SHOPIFY'
-                                ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-800/60'
-                                : channelType === 'EBAY'
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold w-fit ${channelType === 'SHOPIFY'
+                              ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-800/60'
+                              : channelType === 'EBAY'
                                 ? 'bg-amber-950/80 text-amber-400 border border-amber-800/60'
                                 : 'bg-purple-950/80 text-purple-400 border border-purple-800/60'
-                            }`}
+                              }`}
                           >
                             <span>
                               {channelType === 'SHOPIFY'
                                 ? '🛍️ Shopify'
                                 : channelType === 'EBAY'
-                                ? '🏷️ eBay'
-                                : '🌐 Custom Store'}
+                                  ? '🏷️ eBay'
+                                  : '🌐 Custom Store'}
                             </span>
                           </span>
                           <div className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
@@ -324,15 +347,15 @@ export default function UnmappedProductsPage() {
                           <span>
                             {m.unmappedAt
                               ? new Date(m.unmappedAt).toLocaleDateString(undefined, {
-                                  year: 'numeric',
-                                  month: 'short',
-                                  day: 'numeric',
-                                  hour: '2-digit',
-                                  minute: '2-digit',
-                                })
+                                year: 'numeric',
+                                month: 'short',
+                                day: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })
                               : m.updatedAt
-                              ? new Date(m.updatedAt).toLocaleDateString()
-                              : 'Recently'}
+                                ? new Date(m.updatedAt).toLocaleDateString()
+                                : 'Recently'}
                           </span>
                         </div>
                       </td>
@@ -390,16 +413,25 @@ export default function UnmappedProductsPage() {
                         <p className="text-xs text-slate-500">
                           {searchTerm || selectedChannel !== 'all'
                             ? 'No unmapped products match your search or channel filter.'
-                            : 'All product mappings are currently active, or no products have been unmapped yet.'}
+                            : 'All product mappings are currently active, or no products have been unmapped from stores yet.'}
                         </p>
                       </div>
-                      <Link
-                        href="/mappings"
-                        className="inline-flex items-center gap-2 text-xs font-semibold text-brand-400 hover:text-brand-300 pt-1"
-                      >
-                        <span>Go to Product Mapping</span>
-                        <ArrowRight className="w-3.5 h-3.5" />
-                      </Link>
+                      <div className="flex items-center gap-3 pt-1">
+                        <Link
+                          href="/products"
+                          className="inline-flex items-center gap-1.5 text-xs font-semibold text-brand-400 hover:text-brand-300"
+                        >
+                          <span>Review Catalog Products</span>
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </Link>
+                        <span className="text-slate-600">&bull;</span>
+                        <Link
+                          href="/mappings"
+                          className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-400 hover:text-slate-300"
+                        >
+                          <span>Active Mappings</span>
+                        </Link>
+                      </div>
                     </div>
                   </td>
                 </tr>

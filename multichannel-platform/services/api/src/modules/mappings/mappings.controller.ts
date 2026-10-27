@@ -580,9 +580,13 @@ export class MappingsController {
 
       // Restore mapping status to active MAPPED
       mapping.status = MappingStatus.MAPPED;
-      mapping.unmappedAt = undefined;
-      mapping.unmappedReason = undefined;
+      mapping.set('unmappedAt', undefined);
+      mapping.set('unmappedReason', undefined);
       await mapping.save();
+      await ProductMapping.updateOne(
+        { _id: mapping._id },
+        { $unset: { unmappedAt: 1, unmappedReason: 1 }, $set: { status: MappingStatus.MAPPED } }
+      );
 
       await NotificationService.create({
         organizationId: req.tenantId,

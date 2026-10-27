@@ -9,6 +9,7 @@ import {
   InventoryMovement,
   ChannelProduct,
   ProductMapping,
+  ProductVariant,
 } from '../../database/models';
 import {
   ChannelType,
@@ -283,15 +284,60 @@ export class WebhooksController {
       // Line items
       if (Array.isArray(payload.line_items)) {
         for (const item of payload.line_items) {
+          const itemSku = item.sku?.trim();
+          let canonicalVariantId: any = undefined;
+          let unitCost = 0;
+
+          if (itemSku) {
+            const variant = await ProductVariant.findOne({
+              organizationId: connection.organizationId,
+              sku: itemSku,
+            });
+
+            if (variant) {
+              canonicalVariantId = variant._id;
+              unitCost = variant.costPrice || 0;
+
+              // Reserve inventory
+              const invItem = await InventoryItem.findOne({
+                organizationId: connection.organizationId,
+                canonicalVariantId: variant._id,
+              });
+
+              if (invItem) {
+                const prevTracked = invItem.trackedStock;
+                const orderQty = item.quantity || 1;
+                invItem.reservedStock += orderQty;
+                invItem.availableToAllocate = Math.max(
+                  0,
+                  invItem.trackedStock - invItem.reservedStock - invItem.safetyStock
+                );
+                await invItem.save();
+
+                await InventoryMovement.create({
+                  organizationId: connection.organizationId,
+                  canonicalVariantId: variant._id,
+                  changeType: InventoryChangeType.ORDER_RESERVED,
+                  quantityChanged: orderQty,
+                  previousTrackedStock: prevTracked,
+                  newTrackedStock: invItem.trackedStock,
+                  reason: `Reserved for Shopify order ${order.orderNumber}`,
+                  referenceId: order.orderNumber,
+                });
+              }
+            }
+          }
+
           await OrderLine.create({
             organizationId: connection.organizationId,
             orderId: order._id,
             externalLineId: item.id?.toString() || `line_${Date.now()}`,
+            canonicalVariantId,
             sku: item.sku || 'UNKNOWN-SKU',
             title: item.title || 'Product Item',
             quantity: item.quantity || 1,
             unitPrice: parseFloat(item.price || '0'),
-            unitCost: 0,
+            unitCost,
             totalDiscount: 0,
             taxAmount: 0,
           });

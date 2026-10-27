@@ -524,6 +524,7 @@ export class ProductsController {
       }
 
       const mappedCanonicalIds = new Set<string>();
+      const prodToChannelMap = new Map<string, Set<string>>();
 
       for (const m of activeMappings) {
         const prodId = m.canonicalProductId?.toString();
@@ -532,6 +533,12 @@ export class ProductsController {
           mappedCanonicalIds.add(prodId);
           if (chId && channelProductsSet[chId]) {
             channelProductsSet[chId].add(prodId);
+          }
+          if (chId) {
+            if (!prodToChannelMap.has(prodId)) {
+              prodToChannelMap.set(prodId, new Set<string>());
+            }
+            prodToChannelMap.get(prodId)!.add(chId);
           }
         }
         if (chId && channelBreakdown[chId]) {
@@ -551,29 +558,85 @@ export class ProductsController {
       // Incomplete mapped products (mapped to at least 1 channel, but missing at least 1 active channel)
       let incompleteMappedProducts = 0;
       if (activeChannels.length > 1) {
-        const canonicalIds = await CanonicalProduct.find({ organizationId: tenantId }).distinct('_id');
-        for (const cid of canonicalIds) {
-          const cidStr = cid.toString();
-          const mappedToChannels = activeMappings
-            .filter((m) => m.canonicalProductId?.toString() === cidStr)
-            .map((m) => m.channelConnectionId?.toString());
-          const uniqueCh = new Set(mappedToChannels);
-          if (uniqueCh.size > 0 && uniqueCh.size < activeChannels.length) {
+        for (const chSet of prodToChannelMap.values()) {
+          if (chSet.size > 0 && chSet.size < activeChannels.length) {
             incompleteMappedProducts++;
           }
         }
       }
 
-      const shopifyChannel = activeChannels.find((c) => c.channelType === ChannelType.SHOPIFY);
-      const ebayChannel = activeChannels.find((c) => c.channelType === ChannelType.EBAY);
+      const shopifyChannels = activeChannels.filter((c) => c.channelType === ChannelType.SHOPIFY);
+      const ebayChannels = activeChannels.filter((c) => c.channelType === ChannelType.EBAY);
 
-      const shopifyStats = shopifyChannel
-        ? channelBreakdown[shopifyChannel._id.toString()]
-        : { channelId: '', channelName: 'Shopify', channelType: 'SHOPIFY', productsCount: 0, listingsCount: 0, mappedCount: 0 };
+      let shopifyStats = {
+        channelId: '',
+        channelName: 'Shopify',
+        channelType: 'SHOPIFY',
+        productsCount: 0,
+        listingsCount: 0,
+        mappedCount: 0,
+      };
 
-      const ebayStats = ebayChannel
-        ? channelBreakdown[ebayChannel._id.toString()]
-        : { channelId: '', channelName: 'eBay', channelType: 'EBAY', productsCount: 0, listingsCount: 0, mappedCount: 0 };
+      if (shopifyChannels.length === 1) {
+        shopifyStats = channelBreakdown[shopifyChannels[0]._id.toString()] || shopifyStats;
+      } else if (shopifyChannels.length > 1) {
+        const unionProdIds = new Set<string>();
+        let listingsCount = 0;
+        let mappedCount = 0;
+        for (const ch of shopifyChannels) {
+          const b = channelBreakdown[ch._id.toString()];
+          if (b) {
+            listingsCount += b.listingsCount;
+            mappedCount += b.mappedCount;
+          }
+          for (const pid of channelProductsSet[ch._id.toString()] || []) {
+            unionProdIds.add(pid);
+          }
+        }
+        shopifyStats = {
+          channelId: shopifyChannels[0]._id.toString(),
+          channelName: 'Shopify (All Stores)',
+          channelType: 'SHOPIFY',
+          productsCount: unionProdIds.size,
+          listingsCount,
+          mappedCount,
+        };
+      }
+
+      let ebayStats = {
+        channelId: '',
+        channelName: 'eBay',
+        channelType: 'EBAY',
+        productsCount: 0,
+        listingsCount: 0,
+        mappedCount: 0,
+      };
+
+      if (ebayChannels.length === 1) {
+        ebayStats = channelBreakdown[ebayChannels[0]._id.toString()] || ebayStats;
+      } else if (ebayChannels.length > 1) {
+        const unionProdIds = new Set<string>();
+        let listingsCount = 0;
+        let mappedCount = 0;
+        for (const ch of ebayChannels) {
+          const b = channelBreakdown[ch._id.toString()];
+          if (b) {
+            listingsCount += b.listingsCount;
+            mappedCount += b.mappedCount;
+          }
+          for (const pid of channelProductsSet[ch._id.toString()] || []) {
+            unionProdIds.add(pid);
+          }
+        }
+        ebayStats = {
+          channelId: ebayChannels[0]._id.toString(),
+          channelName: 'eBay (All Stores)',
+          channelType: 'EBAY',
+          productsCount: unionProdIds.size,
+          listingsCount,
+          mappedCount,
+        };
+      }
 
       return res.json({
         success: true,

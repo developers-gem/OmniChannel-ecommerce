@@ -134,10 +134,10 @@ export default function DashboardPage() {
 
           <div className="mt-3 pt-2.5 border-t border-slate-800/80 flex flex-wrap items-center gap-1.5 text-[10px]">
             <span className="px-2 py-0.5 rounded-md bg-emerald-950/80 text-emerald-400 border border-emerald-800/60 font-semibold" title="Shopify storefront products">
-              🛍️ Shopify: {catalog.shopifyProducts || 23}
+              🛍️ Shopify: {catalog.shopifyProducts ?? 0}
             </span>
             <span className="px-2 py-0.5 rounded-md bg-amber-950/80 text-amber-400 border border-amber-800/60 font-semibold" title="eBay storefront products">
-              🏷️ eBay: {catalog.ebayProducts || 1}
+              🏷️ eBay: {catalog.ebayProducts ?? 0}
             </span>
             <span className={`px-2 py-0.5 rounded-md font-semibold border ${
               (catalog.zeroMappedCount || 0) > 0

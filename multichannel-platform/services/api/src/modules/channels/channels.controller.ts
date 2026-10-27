@@ -517,7 +517,7 @@ export class ChannelsController {
 
       const statePayload = {
         organizationId: req.tenantId,
-        userId: (req as any).user?._id || (req as any).user?.id,
+        userId: (req as any).user?.userId || (req as any).user?._id || (req as any).user?.id,
         name,
         environment,
       };
@@ -623,10 +623,23 @@ export class ChannelsController {
         tokenType: tokens.tokenType || 'User Access Token',
       };
 
-      const existing = await ChannelConnection.findOne({
-        organizationId: decodedState.organizationId,
-        channelType: ChannelType.EBAY,
-      });
+      const existing =
+        (decodedState.name
+          ? await ChannelConnection.findOne({
+              organizationId: decodedState.organizationId,
+              channelType: ChannelType.EBAY,
+              name: decodedState.name,
+            })
+          : null) ||
+        (await ChannelConnection.findOne({
+          organizationId: decodedState.organizationId,
+          channelType: ChannelType.EBAY,
+          'config.environment': decodedState.environment || 'SANDBOX',
+        })) ||
+        (await ChannelConnection.findOne({
+          organizationId: decodedState.organizationId,
+          channelType: ChannelType.EBAY,
+        }));
 
       if (existing) {
         existing.name = decodedState.name || existing.name;
@@ -688,10 +701,24 @@ export class ChannelsController {
         tokenType: tokens.tokenType || 'User Access Token',
       };
 
-      const existing = await ChannelConnection.findOne({
-        organizationId: req.tenantId,
-        channelType: ChannelType.EBAY,
-      });
+      const trimmedName = name?.trim();
+      const existing =
+        (trimmedName
+          ? await ChannelConnection.findOne({
+              organizationId: req.tenantId,
+              channelType: ChannelType.EBAY,
+              name: trimmedName,
+            })
+          : null) ||
+        (await ChannelConnection.findOne({
+          organizationId: req.tenantId,
+          channelType: ChannelType.EBAY,
+          'config.environment': environment.toUpperCase(),
+        })) ||
+        (await ChannelConnection.findOne({
+          organizationId: req.tenantId,
+          channelType: ChannelType.EBAY,
+        }));
 
       let connection;
       if (existing) {
@@ -817,7 +844,7 @@ export class ChannelsController {
 
       const statePayload = {
         organizationId: req.tenantId,
-        userId: (req as any).user?._id || (req as any).user?.id,
+        userId: (req as any).user?.userId || (req as any).user?._id || (req as any).user?.id,
         name: (name as string)?.trim() || cleanDomain.replace('.myshopify.com', ''),
         shop: cleanDomain,
         clientId: effectiveClientId,
