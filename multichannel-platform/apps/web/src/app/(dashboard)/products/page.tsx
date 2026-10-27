@@ -444,10 +444,10 @@ export default function ProductsPage() {
               Total Master Products
             </span>
             <div className="text-xl font-extrabold text-white mt-0.5">
-              {summary?.totalMasterProducts ?? pagination?.total ?? 23}
+              {summary?.totalMasterProducts ?? pagination?.total ?? 0}
             </div>
             <div className="text-[11px] text-purple-400 font-medium mt-0.5">
-              {summary?.totalVariants ?? 33} SKUs / Variants in Catalog
+              {summary?.totalVariants ?? 0} SKUs / Variants in Catalog
             </div>
           </div>
           <div className="w-10 h-10 rounded-xl bg-purple-950/60 border border-purple-800/80 flex items-center justify-center text-purple-400">
@@ -465,11 +465,14 @@ export default function ProductsPage() {
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
             </div>
             <div className="text-xl font-extrabold text-emerald-400 mt-0.5">
-              {summary?.shopify?.productsCount ?? 23}{' '}
-              <span className="text-xs font-normal text-slate-400">products</span>
+              {summary?.shopify?.storeProductsCount ?? summary?.shopify?.productsCount ?? 0}{' '}
+              <span className="text-xs font-normal text-slate-400">store products</span>
             </div>
             <div className="text-[11px] text-slate-400 mt-0.5">
-              <strong className="text-slate-200">{summary?.shopify?.listingsCount ?? 33}</strong> Listings (100% Mapped)
+              <strong className="text-slate-200">
+                {summary?.shopify?.mappedCount ?? 0} / {summary?.shopify?.listingsCount ?? 0}
+              </strong>{' '}
+              Listings Mapped ({summary?.shopify?.mappedPercentage ?? 0}%)
             </div>
           </div>
           <div className="w-10 h-10 rounded-xl bg-emerald-950/60 border border-emerald-800/80 flex items-center justify-center text-emerald-400">
@@ -487,11 +490,14 @@ export default function ProductsPage() {
               <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
             </div>
             <div className="text-xl font-extrabold text-amber-400 mt-0.5">
-              {summary?.ebay?.productsCount ?? 1}{' '}
-              <span className="text-xs font-normal text-slate-400">product</span>
+              {summary?.ebay?.storeProductsCount ?? summary?.ebay?.productsCount ?? 0}{' '}
+              <span className="text-xs font-normal text-slate-400">store products</span>
             </div>
             <div className="text-[11px] text-slate-400 mt-0.5">
-              <strong className="text-slate-200">{summary?.ebay?.listingsCount ?? 1}</strong> Listing (100% Mapped)
+              <strong className="text-slate-200">
+                {summary?.ebay?.mappedCount ?? 0} / {summary?.ebay?.listingsCount ?? 0}
+              </strong>{' '}
+              Listings Mapped ({summary?.ebay?.mappedPercentage ?? 0}%)
             </div>
           </div>
           <div className="w-10 h-10 rounded-xl bg-amber-950/60 border border-amber-800/80 flex items-center justify-center text-amber-400">

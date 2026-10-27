@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import mongoose from 'mongoose';
 import {
   CanonicalProduct,
   ProductVariant,
@@ -10,30 +11,53 @@ import {
   SyncJob,
 } from '../../database/models';
 import { ChannelStatus } from '@multichannel/shared';
+import { logger } from '../../utils/logger';
 
 export class DashboardController {
   // GET /api/v1/dashboard/metrics - Aggregates genuine real-time metrics across the tenant's catalog, sales, and inventory
   static async getMetrics(req: Request, res: Response) {
     try {
       const tenantId = req.tenantId;
+      const tenantOrgId = tenantId && mongoose.Types.ObjectId.isValid(tenantId)
+        ? new mongoose.Types.ObjectId(tenantId)
+        : tenantId;
 
       const [
         totalProducts,
         totalVariants,
-        allChannelProducts,
+        channelListingsAgg,
         activeMappings,
         activeChannels,
-        inventoryItems,
+        inventoryAgg,
       ] = await Promise.all([
         CanonicalProduct.countDocuments({ organizationId: tenantId }),
         ProductVariant.countDocuments({ organizationId: tenantId }),
-        ChannelProduct.find({ organizationId: tenantId }).lean(),
-        ProductMapping.find({ organizationId: tenantId, status: 'MAPPED' }).lean(),
+        ChannelProduct.aggregate([
+          { $match: { organizationId: tenantOrgId || tenantId } },
+          { $group: { _id: '$channelConnectionId', totalListings: { $sum: 1 } } },
+        ]),
+        ProductMapping.find(
+          { organizationId: tenantId, status: 'MAPPED' },
+          { canonicalProductId: 1, channelConnectionId: 1 }
+        ).lean(),
         ChannelConnection.find({ organizationId: tenantId, status: ChannelStatus.ACTIVE }).lean(),
-        InventoryItem.find({ organizationId: tenantId }).lean(),
+        InventoryItem.aggregate([
+          { $match: { organizationId: tenantOrgId || tenantId } },
+          {
+            $group: {
+              _id: null,
+              totalStock: { $sum: '$trackedStock' },
+              lowStockCount: {
+                $sum: {
+                  $cond: [{ $lte: ['$availableToAllocate', '$lowStockThreshold'] }, 1, 0],
+                },
+              },
+            },
+          },
+        ]),
       ]);
 
-      const totalListings = allChannelProducts.length;
+      const totalListings = channelListingsAgg.reduce((sum, c) => sum + (c.totalListings || 0), 0);
       const totalMapped = activeMappings.length;
 
       // Calculate distinct canonical products mapped per channel
@@ -85,18 +109,15 @@ export class DashboardController {
         }
       }
 
-      const shopifyListings = allChannelProducts.filter((p) =>
-        shopifyConnIds.has(p.channelConnectionId?.toString() || '')
-      ).length;
-      const ebayListings = allChannelProducts.filter((p) =>
-        ebayConnIds.has(p.channelConnectionId?.toString() || '')
-      ).length;
+      const shopifyListings = channelListingsAgg
+        .filter((c) => shopifyConnIds.has(c._id?.toString() || ''))
+        .reduce((sum, c) => sum + (c.totalListings || 0), 0);
+      const ebayListings = channelListingsAgg
+        .filter((c) => ebayConnIds.has(c._id?.toString() || ''))
+        .reduce((sum, c) => sum + (c.totalListings || 0), 0);
 
-      const lowStockCount = inventoryItems.filter(
-        (i) => i.availableToAllocate <= i.lowStockThreshold
-      ).length;
-
-      const totalStockOnHand = inventoryItems.reduce((sum, i) => sum + i.trackedStock, 0);
+      const totalStockOnHand = inventoryAgg[0]?.totalStock || 0;
+      const lowStockCount = inventoryAgg[0]?.lowStockCount || 0;
 
       // 30-day and 24-hour order metrics
       const oneDayAgo = new Date(Date.now() - 24 * 3600 * 1000);

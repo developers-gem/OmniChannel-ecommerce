@@ -480,19 +480,51 @@ export class ProductsController {
   static async getSummaryCounts(req: Request, res: Response) {
     try {
       const tenantId = req.tenantId;
+      const tenantOrgId = tenantId && mongoose.Types.ObjectId.isValid(tenantId)
+        ? new mongoose.Types.ObjectId(tenantId)
+        : tenantId;
 
       const [
         totalMasterProducts,
         totalVariants,
         activeChannels,
         activeMappings,
-        allChannelProducts,
+        storeProductCountsAgg,
+        listingCountsAgg,
+        mappedCountsAgg,
       ] = await Promise.all([
         CanonicalProduct.countDocuments({ organizationId: tenantId }),
         ProductVariant.countDocuments({ organizationId: tenantId }),
         ChannelConnection.find({ organizationId: tenantId, status: ChannelStatus.ACTIVE }).lean(),
-        ProductMapping.find({ organizationId: tenantId, status: MappingStatus.MAPPED }).lean(),
-        ChannelProduct.find({ organizationId: tenantId }).lean(),
+        ProductMapping.find(
+          { organizationId: tenantId, status: MappingStatus.MAPPED },
+          { canonicalProductId: 1, channelConnectionId: 1 }
+        ).lean(),
+        ChannelProduct.aggregate([
+          { $match: { organizationId: tenantOrgId || tenantId } },
+          {
+            $group: {
+              _id: {
+                channelConnectionId: '$channelConnectionId',
+                externalProductId: '$externalProductId',
+              },
+            },
+          },
+          {
+            $group: {
+              _id: '$_id.channelConnectionId',
+              totalStoreProducts: { $sum: 1 },
+            },
+          },
+        ]),
+        ChannelProduct.aggregate([
+          { $match: { organizationId: tenantOrgId || tenantId } },
+          { $group: { _id: '$channelConnectionId', totalListings: { $sum: 1 } } },
+        ]),
+        ProductMapping.aggregate([
+          { $match: { organizationId: tenantOrgId || tenantId, status: MappingStatus.MAPPED } },
+          { $group: { _id: '$channelConnectionId', totalMapped: { $sum: 1 } } },
+        ]),
       ]);
 
       const channelBreakdown: Record<
@@ -501,26 +533,38 @@ export class ProductsController {
           channelId: string;
           channelName: string;
           channelType: string;
+          storeProductsCount: number;
           productsCount: number;
           listingsCount: number;
           mappedCount: number;
+          mappedCanonicalCount: number;
+          mappedPercentage: number;
         }
       > = {};
-      const channelProductsSet: Record<string, Set<string>> = {};
+
+      const channelCanonicalProdsMap: Record<string, Set<string>> = {};
 
       for (const ch of activeChannels) {
         const chIdStr = ch._id.toString();
+        const storeProds =
+          storeProductCountsAgg.find((s) => s._id?.toString() === chIdStr)?.totalStoreProducts || 0;
+        const listings =
+          listingCountsAgg.find((l) => l._id?.toString() === chIdStr)?.totalListings || 0;
+        const mapped =
+          mappedCountsAgg.find((m) => m._id?.toString() === chIdStr)?.totalMapped || 0;
+
         channelBreakdown[chIdStr] = {
           channelId: chIdStr,
           channelName: ch.name,
           channelType: ch.channelType,
-          productsCount: 0,
-          listingsCount: allChannelProducts.filter(
-            (p) => p.channelConnectionId?.toString() === chIdStr
-          ).length,
-          mappedCount: 0,
+          storeProductsCount: storeProds,
+          productsCount: storeProds || listings,
+          listingsCount: listings,
+          mappedCount: mapped,
+          mappedCanonicalCount: 0,
+          mappedPercentage: listings > 0 ? Math.round((mapped / listings) * 100) : 0,
         };
-        channelProductsSet[chIdStr] = new Set();
+        channelCanonicalProdsMap[chIdStr] = new Set();
       }
 
       const mappedCanonicalIds = new Set<string>();
@@ -531,8 +575,8 @@ export class ProductsController {
         const chId = m.channelConnectionId?.toString();
         if (prodId) {
           mappedCanonicalIds.add(prodId);
-          if (chId && channelProductsSet[chId]) {
-            channelProductsSet[chId].add(prodId);
+          if (chId && channelCanonicalProdsMap[chId]) {
+            channelCanonicalProdsMap[chId].add(prodId);
           }
           if (chId) {
             if (!prodToChannelMap.has(prodId)) {
@@ -541,14 +585,11 @@ export class ProductsController {
             prodToChannelMap.get(prodId)!.add(chId);
           }
         }
-        if (chId && channelBreakdown[chId]) {
-          channelBreakdown[chId].mappedCount++;
-        }
       }
 
-      for (const chId in channelProductsSet) {
+      for (const chId in channelCanonicalProdsMap) {
         if (channelBreakdown[chId]) {
-          channelBreakdown[chId].productsCount = channelProductsSet[chId].size;
+          channelBreakdown[chId].mappedCanonicalCount = channelCanonicalProdsMap[chId].size;
         }
       }
 
@@ -568,75 +609,55 @@ export class ProductsController {
       const shopifyChannels = activeChannels.filter((c) => c.channelType === ChannelType.SHOPIFY);
       const ebayChannels = activeChannels.filter((c) => c.channelType === ChannelType.EBAY);
 
-      let shopifyStats = {
-        channelId: '',
-        channelName: 'Shopify',
-        channelType: 'SHOPIFY',
-        productsCount: 0,
-        listingsCount: 0,
-        mappedCount: 0,
-      };
+      const buildChannelStats = (channels: typeof activeChannels, defaultName: string, channelTypeStr: string) => {
+        if (channels.length === 0) {
+          return {
+            channelId: '',
+            channelName: defaultName,
+            channelType: channelTypeStr,
+            storeProductsCount: 0,
+            productsCount: 0,
+            listingsCount: 0,
+            mappedCount: 0,
+            mappedCanonicalCount: 0,
+            mappedPercentage: 0,
+          };
+        }
 
-      if (shopifyChannels.length === 1) {
-        shopifyStats = channelBreakdown[shopifyChannels[0]._id.toString()] || shopifyStats;
-      } else if (shopifyChannels.length > 1) {
-        const unionProdIds = new Set<string>();
+        let storeProductsCount = 0;
         let listingsCount = 0;
         let mappedCount = 0;
-        for (const ch of shopifyChannels) {
+        const unionCanonicalProdIds = new Set<string>();
+
+        for (const ch of channels) {
           const b = channelBreakdown[ch._id.toString()];
           if (b) {
+            storeProductsCount += b.storeProductsCount;
             listingsCount += b.listingsCount;
             mappedCount += b.mappedCount;
           }
-          for (const pid of channelProductsSet[ch._id.toString()] || []) {
-            unionProdIds.add(pid);
+          for (const pid of channelCanonicalProdsMap[ch._id.toString()] || []) {
+            unionCanonicalProdIds.add(pid);
           }
         }
-        shopifyStats = {
-          channelId: shopifyChannels[0]._id.toString(),
-          channelName: 'Shopify (All Stores)',
-          channelType: 'SHOPIFY',
-          productsCount: unionProdIds.size,
+
+        const mappedPercentage = listingsCount > 0 ? Math.round((mappedCount / listingsCount) * 100) : 0;
+
+        return {
+          channelId: channels[0]._id.toString(),
+          channelName: channels.length > 1 ? `${defaultName} (${channels.length} Stores)` : channels[0].name,
+          channelType: channelTypeStr,
+          storeProductsCount,
+          productsCount: storeProductsCount || listingsCount,
           listingsCount,
           mappedCount,
+          mappedCanonicalCount: unionCanonicalProdIds.size,
+          mappedPercentage,
         };
-      }
-
-      let ebayStats = {
-        channelId: '',
-        channelName: 'eBay',
-        channelType: 'EBAY',
-        productsCount: 0,
-        listingsCount: 0,
-        mappedCount: 0,
       };
 
-      if (ebayChannels.length === 1) {
-        ebayStats = channelBreakdown[ebayChannels[0]._id.toString()] || ebayStats;
-      } else if (ebayChannels.length > 1) {
-        const unionProdIds = new Set<string>();
-        let listingsCount = 0;
-        let mappedCount = 0;
-        for (const ch of ebayChannels) {
-          const b = channelBreakdown[ch._id.toString()];
-          if (b) {
-            listingsCount += b.listingsCount;
-            mappedCount += b.mappedCount;
-          }
-          for (const pid of channelProductsSet[ch._id.toString()] || []) {
-            unionProdIds.add(pid);
-          }
-        }
-        ebayStats = {
-          channelId: ebayChannels[0]._id.toString(),
-          channelName: 'eBay (All Stores)',
-          channelType: 'EBAY',
-          productsCount: unionProdIds.size,
-          listingsCount,
-          mappedCount,
-        };
-      }
+      const shopifyStats = buildChannelStats(shopifyChannels, 'Shopify', 'SHOPIFY');
+      const ebayStats = buildChannelStats(ebayChannels, 'eBay', 'EBAY');
 
       return res.json({
         success: true,

@@ -34,7 +34,7 @@ export default function DashboardPage() {
     queryKey: ['dashboard-metrics'],
     queryFn: async () => {
       const res: any = await api.get('/dashboard/metrics');
-      return res.data;
+      return res?.data?.catalog ? res.data : (res?.catalog ? res : (res?.data || res || {}));
     },
   });
 
@@ -42,14 +42,24 @@ export default function DashboardPage() {
     queryKey: ['pnl-trends'],
     queryFn: async () => {
       const res: any = await api.get('/pnl/trends?days=14');
-      return res.data;
+      return res?.data || res || [];
     },
   });
 
-  const catalog = metricsData?.catalog || { totalProducts: 0, totalListings: 0, totalMapped: 0, mappingPercentage: 0 };
-  const inventory = metricsData?.inventory || { totalStockOnHand: 0, lowStockCount: 0 };
-  const sales = metricsData?.sales || { orders24h: 0, revenue24h: 0, orders30d: 0, revenue30d: 0 };
-  const recentOrders = metricsData?.recentOrders || [];
+  const metrics = metricsData?.catalog ? metricsData : (metricsData?.data?.catalog ? metricsData.data : (metricsData || {}));
+  const catalog = metrics?.catalog || {
+    totalProducts: 0,
+    totalVariants: 0,
+    totalListings: 0,
+    totalMapped: 0,
+    mappingPercentage: 0,
+    shopifyProducts: 0,
+    ebayProducts: 0,
+    zeroMappedCount: 0,
+  };
+  const inventory = metrics?.inventory || { totalStockOnHand: 0, lowStockCount: 0 };
+  const sales = metrics?.sales || { orders24h: 0, revenue24h: 0, orders30d: 0, revenue30d: 0 };
+  const recentOrders = metrics?.recentOrders || [];
 
   return (
     <div className="space-y-6">
