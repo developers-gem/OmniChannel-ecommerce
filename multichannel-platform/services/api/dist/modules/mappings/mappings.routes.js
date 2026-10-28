@@ -1,0 +1,20 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const mappings_controller_1 = require("./mappings.controller");
+const auth_1 = require("../../middlewares/auth");
+const tenant_1 = require("../../middlewares/tenant");
+const router = (0, express_1.Router)();
+router.use(auth_1.requireAuth);
+router.use(tenant_1.enforceTenantIsolation);
+router.get('/', mappings_controller_1.MappingsController.list);
+router.get('/unmapped', mappings_controller_1.MappingsController.listUnmapped);
+router.get('/suggestions', mappings_controller_1.MappingsController.getSuggestions);
+router.post('/map', mappings_controller_1.MappingsController.map);
+router.post('/bulk-map', mappings_controller_1.MappingsController.bulkMap);
+router.post('/:id/remap', mappings_controller_1.MappingsController.remap);
+router.delete('/', mappings_controller_1.MappingsController.unmapAll);
+router.delete('/:id/permanent', mappings_controller_1.MappingsController.deletePermanent);
+router.delete('/:id', mappings_controller_1.MappingsController.unmap);
+exports.default = router;
+//# sourceMappingURL=mappings.routes.js.map

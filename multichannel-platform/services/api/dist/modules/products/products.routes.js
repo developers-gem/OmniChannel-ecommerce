@@ -1,0 +1,22 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const products_controller_1 = require("./products.controller");
+const auth_1 = require("../../middlewares/auth");
+const tenant_1 = require("../../middlewares/tenant");
+const validate_1 = require("../../middlewares/validate");
+const shared_1 = require("@multichannel/shared");
+const router = (0, express_1.Router)();
+router.use(auth_1.requireAuth);
+router.use(tenant_1.enforceTenantIsolation);
+router.get('/', products_controller_1.ProductsController.list);
+router.get('/summary-counts', products_controller_1.ProductsController.getSummaryCounts);
+router.get('/zero-mapped', products_controller_1.ProductsController.listZeroMapped);
+router.post('/bulk-publish', products_controller_1.ProductsController.bulkPublish);
+router.get('/:id', products_controller_1.ProductsController.getById);
+router.post('/', (0, validate_1.validate)(shared_1.CreateProductSchema), products_controller_1.ProductsController.create);
+router.put('/:id', products_controller_1.ProductsController.update);
+router.post('/:id/publish', products_controller_1.ProductsController.publish);
+router.delete('/:id', products_controller_1.ProductsController.delete);
+exports.default = router;
+//# sourceMappingURL=products.routes.js.map
