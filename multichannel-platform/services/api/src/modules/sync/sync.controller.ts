@@ -150,30 +150,151 @@ export class SyncController {
               } else if (conn.channelType === ChannelType.EBAY) {
                 try {
                   const { host, token } = await EbayService.getValidCredentials(conn);
-                  const items = await EbayService.getInventoryItems(host, token, 100);
+                  const items = await EbayService.getInventoryItems(host, token, 100, conn);
+                  const activeSkus = new Set<string>();
+
                   for (const item of items) {
-                    await ChannelProduct.findOneAndUpdate(
+                    if (!item.sku) continue;
+                    activeSkus.add(item.sku.toUpperCase().trim());
+                    const listingId = item.listingId || item.sku;
+
+                    const chProd = await ChannelProduct.findOneAndUpdate(
                       {
                         organizationId: req.tenantId,
                         channelConnectionId: conn._id,
-                        externalProductId: item.sku,
+                        sku: item.sku.toUpperCase().trim(),
                       },
                       {
                         channelType: ChannelType.EBAY,
+                        externalProductId: listingId,
+                        externalVariantId: item.sku,
                         title: item.title,
-                        sku: item.sku ? item.sku.toUpperCase().trim() : undefined,
+                        sku: item.sku.toUpperCase().trim(),
                         barcode: '',
                         price: item.price || 0,
                         inventoryQuantity: item.quantity || 0,
                         status: ChannelProductStatus.ACTIVE,
                         syncStatus: SyncStatus.SYNCED,
                         lastSyncedAt: new Date(),
-                        rawPayload: { ebayItem: item.raw, images: item.images, description: item.description },
+                        rawPayload: {
+                          ebayItem: item.raw,
+                          images: item.images,
+                          description: item.description,
+                          listingId,
+                          offerId: item.offerId,
+                        },
                       },
                       { upsert: true, new: true }
                     );
+
+                    // Auto-ingest into Master Catalog if not yet present
+                    let canonicalProd = await CanonicalProduct.findOne({
+                      organizationId: req.tenantId,
+                      $or: [{ masterSku: item.sku.toUpperCase().trim() }, { title: item.title }],
+                    });
+
+                    if (!canonicalProd) {
+                      canonicalProd = await CanonicalProduct.create({
+                        organizationId: req.tenantId,
+                        title: item.title,
+                        masterSku: item.sku.toUpperCase().trim(),
+                        description: item.description || item.title,
+                        brand: item.aspects?.Brand?.[0] || 'eBay',
+                        category: item.aspects?.Type?.[0] || 'General',
+                        tags: ['eBay'],
+                        images: (item.images || []).map((url: string, idx: number) => ({
+                          url,
+                          altText: item.title,
+                          position: idx,
+                          isPrimary: idx === 0,
+                        })),
+                        defaultCostPrice: 0,
+                        defaultRetailPrice: item.price || 0,
+                        totalVariants: 1,
+                        status: ProductStatus.ACTIVE,
+                      });
+                    }
+
+                    let variant = await ProductVariant.findOne({
+                      organizationId: req.tenantId,
+                      canonicalProductId: canonicalProd._id,
+                      sku: item.sku.toUpperCase().trim(),
+                    });
+
+                    if (!variant) {
+                      variant = await ProductVariant.create({
+                        organizationId: req.tenantId,
+                        canonicalProductId: canonicalProd._id,
+                        sku: item.sku.toUpperCase().trim(),
+                        title: item.title,
+                        costPrice: 0,
+                        retailPrice: item.price || 0,
+                      });
+                    }
+
+                    let invItem = await InventoryItem.findOne({
+                      organizationId: req.tenantId,
+                      canonicalVariantId: variant._id,
+                    });
+
+                    if (!invItem) {
+                      const stock = Math.max(0, item.quantity || 0);
+                      invItem = await InventoryItem.create({
+                        organizationId: req.tenantId,
+                        canonicalVariantId: variant._id,
+                        sku: variant.sku,
+                        trackedStock: stock,
+                        reservedStock: 0,
+                        safetyStock: 0,
+                        availableToAllocate: stock,
+                        lowStockThreshold: 5,
+                      });
+                    }
+
+                    // Ensure 1:1 ProductMapping is active
+                    await ProductMapping.findOneAndUpdate(
+                      {
+                        organizationId: req.tenantId,
+                        channelProductId: chProd._id,
+                      },
+                      {
+                        $set: {
+                          canonicalProductId: canonicalProd._id,
+                          canonicalVariantId: variant._id,
+                          channelConnectionId: conn._id,
+                          channelProductId: chProd._id,
+                          channelType: ChannelType.EBAY,
+                          mappingConfidence: MappingConfidence.EXACT_SKU,
+                          syncPrice: true,
+                          syncInventory: true,
+                          status: MappingStatus.MAPPED,
+                        },
+                        $unset: {
+                          unmappedAt: 1,
+                          unmappedReason: 1,
+                        },
+                      },
+                      { upsert: true, new: true }
+                    );
+
                     syncedCount++;
                   }
+
+                  // Reconcile and clean up stale channel products not present on eBay
+                  const allChannelProds = await ChannelProduct.find({
+                    organizationId: req.tenantId,
+                    channelConnectionId: conn._id,
+                  });
+                  const staleToClean = allChannelProds.filter(
+                    (cp) => cp.sku && !activeSkus.has(cp.sku.toUpperCase().trim())
+                  );
+                  if (staleToClean.length > 0) {
+                    const staleIds = staleToClean.map((p) => p._id);
+                    await ChannelProduct.deleteMany({ _id: { $in: staleIds } });
+                    await ProductMapping.deleteMany({ channelProductId: { $in: staleIds } });
+                    logger.info(`Reconciled and removed ${staleToClean.length} stale eBay products for ${conn.name}`);
+                  }
+
                   conn.lastSyncAt = new Date();
                   await conn.save();
                   logger.info(`Successfully imported ${syncedCount} eBay products for ${conn.name}`);
@@ -249,12 +370,12 @@ export class SyncController {
                     canonicalVariantId: variant._id,
                   });
                   if (invItem && chProd.sku) {
-                    const success = await EbayService.setInventoryItem(host, token, chProd.sku, {
+                    const setResult = await EbayService.setInventoryItem(host, token, chProd.sku, {
                       title: chProd.title,
                       quantity: invItem.availableToAllocate,
                       price: variant.retailPrice,
                     });
-                    if (success) {
+                    if (setResult?.success) {
                       chProd.inventoryQuantity = invItem.availableToAllocate;
                       chProd.lastSyncedAt = new Date();
                       await chProd.save();
@@ -312,12 +433,12 @@ export class SyncController {
               } else if (conn?.channelType === ChannelType.EBAY && chProd?.sku && variant) {
                 try {
                   const { host, token } = await EbayService.getValidCredentials(conn);
-                  const success = await EbayService.setInventoryItem(host, token, chProd.sku, {
+                  const setResult = await EbayService.setInventoryItem(host, token, chProd.sku, {
                     title: chProd.title,
                     quantity: chProd.inventoryQuantity || 0,
                     price: variant.retailPrice,
                   });
-                  if (success) {
+                  if (setResult?.success) {
                     chProd.price = variant.retailPrice;
                     chProd.lastSyncedAt = new Date();
                     await chProd.save();
@@ -436,16 +557,24 @@ export class SyncController {
         } else if (conn.channelType === ChannelType.EBAY) {
           try {
             const { host, token } = await EbayService.getValidCredentials(conn);
-            const items = await EbayService.getInventoryItems(host, token, 100);
+            const items = await EbayService.getInventoryItems(host, token, 100, conn);
+            const activeSkus = new Set<string>();
+
             for (const item of items) {
+              if (!item.sku) continue;
+              activeSkus.add(item.sku.toUpperCase().trim());
+              const listingId = item.listingId || item.sku;
+
               await ChannelProduct.findOneAndUpdate(
                 {
                   organizationId: req.tenantId,
                   channelConnectionId: conn._id,
-                  externalProductId: item.sku,
+                  sku: item.sku.toUpperCase().trim(),
                 },
                 {
                   channelType: ChannelType.EBAY,
+                  externalProductId: listingId,
+                  externalVariantId: item.sku,
                   title: item.title,
                   sku: item.sku ? item.sku.toUpperCase().trim() : undefined,
                   barcode: '',
@@ -454,10 +583,30 @@ export class SyncController {
                   status: ChannelProductStatus.ACTIVE,
                   syncStatus: SyncStatus.SYNCED,
                   lastSyncedAt: new Date(),
-                  rawPayload: { ebayItem: item.raw, images: item.images, description: item.description },
+                  rawPayload: {
+                    ebayItem: item.raw,
+                    images: item.images,
+                    description: item.description,
+                    listingId,
+                    offerId: item.offerId,
+                  },
                 },
                 { upsert: true, new: true }
               );
+            }
+
+            // Clean up stale channel products not present on eBay
+            const allConnProds = await ChannelProduct.find({
+              organizationId: req.tenantId,
+              channelConnectionId: conn._id,
+            });
+            const staleProds = allConnProds.filter(
+              (cp) => cp.sku && !activeSkus.has(cp.sku.toUpperCase().trim())
+            );
+            if (staleProds.length > 0) {
+              const staleIds = staleProds.map((p) => p._id);
+              await ChannelProduct.deleteMany({ _id: { $in: staleIds } });
+              await ProductMapping.deleteMany({ channelProductId: { $in: staleIds } });
             }
           } catch (fetchErr: any) {
             logger.warn(`Could not refresh eBay channel catalog directly: ${fetchErr.message}`);

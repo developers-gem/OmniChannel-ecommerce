@@ -1154,71 +1154,78 @@ export class ProductsController {
                 ? Math.round(basePrice * (1 + feePercent / 100) * 100) / 100
                 : basePrice;
 
-              const success = await EbayService.setInventoryItem(host, token, platformVariant.sku, {
+              const setResult = await EbayService.setInventoryItem(host, token, platformVariant.sku, {
                 title: variantTitle,
                 description: product.description || product.title,
                 quantity: stock,
                 price: finalPrice,
                 images,
+                brand: product.brand || 'Generic',
+                marketplaceId: conn.config?.marketplaceId || (conn.name.toLowerCase().includes('uk') ? 'EBAY_GB' : undefined),
               });
 
-              if (success) {
-                const channelProd = await ChannelProduct.findOneAndUpdate(
-                  {
-                    organizationId: req.tenantId,
-                    channelConnectionId: conn._id,
-                    sku: platformVariant.sku,
-                  },
-                  {
-                    channelType: ChannelType.EBAY,
-                    externalProductId: platformVariant.sku,
-                    externalVariantId: platformVariant.sku,
-                    title: variantTitle,
-                    sku: platformVariant.sku,
-                    barcode: platformVariant.barcode || '',
-                    price: finalPrice,
-                    inventoryQuantity: stock,
-                    status: ChannelProductStatus.ACTIVE,
-                    syncStatus: SyncStatus.SYNCED,
-                    lastSyncedAt: new Date(),
-                    rawPayload: {
-                      sku: platformVariant.sku,
-                      title: variantTitle,
-                      price: finalPrice,
-                      quantity: stock,
-                    },
-                  },
-                  { upsert: true, new: true }
-                );
+              if (!setResult.success) {
+                throw new Error(setResult.error || `Failed to publish SKU ${platformVariant.sku} to eBay`);
+              }
 
-                const mapping = await ProductMapping.findOneAndUpdate(
-                  {
-                    organizationId: req.tenantId,
+              const listingId = setResult.listingId || platformVariant.sku;
+              const channelProd = await ChannelProduct.findOneAndUpdate(
+                {
+                  organizationId: req.tenantId,
+                  channelConnectionId: conn._id,
+                  sku: platformVariant.sku,
+                },
+                {
+                  channelType: ChannelType.EBAY,
+                  externalProductId: listingId,
+                  externalVariantId: platformVariant.sku,
+                  title: variantTitle,
+                  sku: platformVariant.sku,
+                  barcode: platformVariant.barcode || '',
+                  price: finalPrice,
+                  inventoryQuantity: stock,
+                  status: ChannelProductStatus.ACTIVE,
+                  syncStatus: SyncStatus.SYNCED,
+                  lastSyncedAt: new Date(),
+                  rawPayload: {
+                    sku: platformVariant.sku,
+                    title: variantTitle,
+                    price: finalPrice,
+                    quantity: stock,
+                    listingId,
+                    offerId: setResult.offerId,
+                  },
+                },
+                { upsert: true, new: true }
+              );
+
+              const mapping = await ProductMapping.findOneAndUpdate(
+                {
+                  organizationId: req.tenantId,
+                  canonicalVariantId: platformVariant._id,
+                  channelConnectionId: conn._id,
+                },
+                {
+                  $set: {
+                    canonicalProductId: product._id,
                     canonicalVariantId: platformVariant._id,
                     channelConnectionId: conn._id,
+                    channelProductId: channelProd._id,
+                    channelType: ChannelType.EBAY,
+                    mappingConfidence: MappingConfidence.EXACT_SKU,
+                    syncPrice: true,
+                    syncInventory: true,
+                    status: MappingStatus.MAPPED,
                   },
-                  {
-                    $set: {
-                      canonicalProductId: product._id,
-                      canonicalVariantId: platformVariant._id,
-                      channelConnectionId: conn._id,
-                      channelProductId: channelProd._id,
-                      channelType: ChannelType.EBAY,
-                      mappingConfidence: MappingConfidence.EXACT_SKU,
-                      syncPrice: true,
-                      syncInventory: true,
-                      status: MappingStatus.MAPPED,
-                    },
-                    $unset: {
-                      unmappedAt: 1,
-                      unmappedReason: 1,
-                    },
+                  $unset: {
+                    unmappedAt: 1,
+                    unmappedReason: 1,
                   },
-                  { upsert: true, new: true }
-                );
+                },
+                { upsert: true, new: true }
+              );
 
-                createdMappings.push(mapping);
-              }
+              createdMappings.push(mapping);
             }
 
             conn.lastSyncAt = new Date();

@@ -300,20 +300,310 @@ export class EbayService {
   }
 
   /**
-   * Get an authorized axios instance for eBay REST APIs
+   * Determine marketplace, currency, and locale from connection or name
    */
-  static getClient(host: string, token: string) {
+  static resolveMarketplace(connectionOrName?: any): { marketplaceId: string; currency: string; locale: string } {
+    let name = '';
+    let domain = '';
+    if (typeof connectionOrName === 'string') {
+      name = connectionOrName;
+    } else if (connectionOrName) {
+      name = connectionOrName.name || '';
+      domain = connectionOrName.config?.storeDomain || connectionOrName.config?.marketplaceId || '';
+    }
+    const combined = `${name} ${domain}`.toLowerCase();
+    if (combined.includes('uk') || combined.includes('gb') || combined.includes('ebay_gb')) {
+      return { marketplaceId: 'EBAY_GB', currency: 'GBP', locale: 'en-GB' };
+    }
+    return { marketplaceId: 'EBAY_US', currency: 'USD', locale: 'en-US' };
+  }
+
+  /**
+   * Resolve an eBay category ID based on product keywords
+   */
+  static resolveCategoryId(categoryNameOrTitle?: string): string {
+    const text = (categoryNameOrTitle || '').toLowerCase();
+    if (text.includes('ink') || text.includes('toner') || text.includes('cartridge')) {
+      return '168061'; // Ink Cartridges
+    }
+    if (text.includes('watch') || text.includes('fitness') || text.includes('tracker')) {
+      return '31387'; // Wristwatches
+    }
+    if (text.includes('headphone') || text.includes('earphone') || text.includes('audio')) {
+      return '111694'; // Headphones
+    }
+    if (text.includes('pen') || text.includes('stationery') || text.includes('notebook')) {
+      return '967'; // Pens & Writing Instruments
+    }
+    if (text.includes('snowboard') || text.includes('ski') || text.includes('sport')) {
+      return '21248'; // Snowboarding
+    }
+    return '168061'; // Safe default
+  }
+
+  /**
+   * Ensure standard category-specific aspects are provided
+   */
+  static resolveAspects(title: string, brand?: string, customAspects?: Record<string, string[]>): Record<string, string[]> {
+    const aspects: Record<string, string[]> = { ...(customAspects || {}) };
+    if (!aspects['Brand']) {
+      aspects['Brand'] = [brand || 'Generic'];
+    }
+    if (!aspects['Type']) {
+      aspects['Type'] = ['Original'];
+    }
+    const t = title.toLowerCase();
+    if (t.includes('ink') || t.includes('cartridge')) {
+      if (!aspects['Compatible Brand']) aspects['Compatible Brand'] = ['For HP'];
+      if (!aspects['Colour']) aspects['Colour'] = ['Black'];
+      if (!aspects['Print Technology']) aspects['Print Technology'] = ['Inkjet'];
+    }
+    if (t.includes('headphone') || t.includes('earphone')) {
+      if (!aspects['Connectivity']) aspects['Connectivity'] = ['Bluetooth'];
+      if (!aspects['Model']) aspects['Model'] = ['Universal'];
+    }
+    return aspects;
+  }
+
+  /**
+   * Get an authorized axios instance for eBay REST APIs with custom locale
+   */
+  static getClient(host: string, token: string, locale = 'en-US') {
     return axios.create({
       baseURL: `https://${host}`,
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
         Accept: 'application/json',
-        'Accept-Language': 'en-US',
-        'Content-Language': 'en-US',
+        'Accept-Language': locale,
+        'Content-Language': locale,
       },
       timeout: 20000,
     });
+  }
+
+  /**
+   * Ensure merchant warehouse location is present on eBay account
+   */
+  static async ensureMerchantLocation(client: any): Promise<string> {
+    try {
+      const res = await client.get('/sell/inventory/v1/location?limit=5');
+      const locs = res.data?.locations || [];
+      if (locs.length > 0 && locs[0].merchantLocationKey) {
+        return locs[0].merchantLocationKey;
+      }
+    } catch (e: any) {
+      logger.warn(`Could not list eBay merchant locations: ${e.message}`);
+    }
+
+    const defaultKey = 'sandbox-warehouse-1';
+    try {
+      await client.post(`/sell/inventory/v1/location/${defaultKey}`, {
+        location: {
+          address: {
+            addressLine1: '123 Logistics Way',
+            city: 'London',
+            stateOrProvince: 'London',
+            postalCode: 'EC1A 1BB',
+            country: 'GB',
+          },
+        },
+        name: 'Main Warehouse',
+        merchantLocationStatus: 'ENABLED',
+        locationTypes: ['WAREHOUSE'],
+      });
+      return defaultKey;
+    } catch {
+      return defaultKey;
+    }
+  }
+
+  /**
+   * Ensure fulfillment, payment, and return policies exist on eBay account
+   */
+  static async ensureListingPolicies(
+    client: any,
+    marketplaceId: string
+  ): Promise<{ fulfillmentPolicyId: string; paymentPolicyId: string; returnPolicyId: string }> {
+    let fulfillmentPolicyId = '';
+    let paymentPolicyId = '';
+    let returnPolicyId = '';
+    const isGB = marketplaceId === 'EBAY_GB';
+
+    // 1. Fulfillment policy
+    try {
+      const fRes = await client.get(`/sell/account/v1/fulfillment_policy?marketplace_id=${marketplaceId}`);
+      const fList = fRes.data?.fulfillmentPolicies || [];
+      if (fList.length > 0) {
+        fulfillmentPolicyId = fList[0].fulfillmentPolicyId;
+      } else {
+        const createFRes = await client.post('/sell/account/v1/fulfillment_policy', {
+          name: `Standard Free Shipping ${isGB ? 'UK' : 'US'}`,
+          description: 'Standard domestic free shipping',
+          marketplaceId,
+          categoryTypes: [{ name: 'ALL_EXCLUDING_MOTORS_VEHICLES', default: true }],
+          handlingTime: { value: 1, unit: 'DAY' },
+          shippingOptions: [
+            {
+              costType: 'FLAT_RATE',
+              optionType: 'DOMESTIC',
+              shippingServices: [
+                {
+                  shippingServiceCode: isGB ? 'UK_RoyalMailFirstClassStandard' : 'USPSPriority',
+                  shippingCost: { value: '0.0', currency: isGB ? 'GBP' : 'USD' },
+                  freeShipping: true,
+                  sortOrder: 1,
+                },
+              ],
+            },
+          ],
+        });
+        fulfillmentPolicyId = createFRes.data?.fulfillmentPolicyId || '';
+      }
+    } catch (err: any) {
+      logger.warn(`Failed to resolve fulfillment policy for ${marketplaceId}: ${err.message}`);
+    }
+
+    // 2. Payment policy
+    try {
+      const pRes = await client.get(`/sell/account/v1/payment_policy?marketplace_id=${marketplaceId}`);
+      const pList = pRes.data?.paymentPolicies || [];
+      if (pList.length > 0) {
+        paymentPolicyId = pList[0].paymentPolicyId;
+      } else {
+        const createPRes = await client.post('/sell/account/v1/payment_policy', {
+          name: `Immediate Payment ${marketplaceId}`,
+          marketplaceId,
+          categoryTypes: [{ name: 'ALL_EXCLUDING_MOTORS_VEHICLES', default: true }],
+          immediatePay: true,
+        });
+        paymentPolicyId = createPRes.data?.paymentPolicyId || '';
+      }
+    } catch (err: any) {
+      logger.warn(`Failed to resolve payment policy for ${marketplaceId}: ${err.message}`);
+    }
+
+    // 3. Return policy
+    try {
+      const rRes = await client.get(`/sell/account/v1/return_policy?marketplace_id=${marketplaceId}`);
+      const rList = rRes.data?.returnPolicies || [];
+      if (rList.length > 0) {
+        returnPolicyId = rList[0].returnPolicyId;
+      } else {
+        const createRRes = await client.post('/sell/account/v1/return_policy', {
+          name: `Standard 30 Day Returns ${marketplaceId}`,
+          marketplaceId,
+          categoryTypes: [{ name: 'ALL_EXCLUDING_MOTORS_VEHICLES' }],
+          returnsAccepted: true,
+          returnPeriod: { value: 30, unit: 'DAY' },
+          returnShippingCostPayer: 'BUYER',
+        });
+        returnPolicyId = createRRes.data?.returnPolicyId || '';
+      }
+    } catch (err: any) {
+      logger.warn(`Failed to resolve return policy for ${marketplaceId}: ${err.message}`);
+    }
+
+    return { fulfillmentPolicyId, paymentPolicyId, returnPolicyId };
+  }
+
+  /**
+   * Create or update offer and publish to make the listing live on eBay
+   */
+  static async createOrUpdateAndPublishOffer(
+    client: any,
+    sku: string,
+    params: {
+      marketplaceId: string;
+      currency: string;
+      price: number;
+      quantity: number;
+      title: string;
+      categoryId?: string;
+      policies?: { fulfillmentPolicyId?: string; paymentPolicyId?: string; returnPolicyId?: string };
+      merchantLocationKey?: string;
+    }
+  ): Promise<{ offerId?: string; listingId?: string; status: string; error?: string }> {
+    const { marketplaceId, currency, price, quantity, categoryId, policies, merchantLocationKey } = params;
+
+    let existingOfferId: string | undefined;
+    let existingListingId: string | undefined;
+    let existingStatus: string | undefined;
+
+    try {
+      const offRes = await client.get(`/sell/inventory/v1/offer?sku=${encodeURIComponent(sku)}`);
+      const offers = offRes.data?.offers || [];
+      const match = offers.find((o: any) => o.marketplaceId === marketplaceId) || offers[0];
+      if (match) {
+        existingOfferId = match.offerId;
+        existingListingId = match.listing?.listingId;
+        existingStatus = match.status;
+      }
+    } catch {
+      // 404 is expected when no offer exists yet
+    }
+
+    const offerPayload: any = {
+      sku,
+      marketplaceId,
+      format: 'FIXED_PRICE',
+      availableQuantity: Math.max(1, quantity),
+      categoryId: categoryId || this.resolveCategoryId(params.title),
+      pricingSummary: {
+        price: {
+          currency,
+          value: Number(price || 1).toFixed(2),
+        },
+      },
+      merchantLocationKey: merchantLocationKey || 'sandbox-warehouse-1',
+    };
+
+    if (policies?.fulfillmentPolicyId && policies?.paymentPolicyId && policies?.returnPolicyId) {
+      offerPayload.listingPolicies = {
+        fulfillmentPolicyId: policies.fulfillmentPolicyId,
+        paymentPolicyId: policies.paymentPolicyId,
+        returnPolicyId: policies.returnPolicyId,
+      };
+    }
+
+    let offerId = existingOfferId;
+    if (existingOfferId) {
+      try {
+        await client.put(`/sell/inventory/v1/offer/${existingOfferId}`, offerPayload);
+      } catch (putErr: any) {
+        logger.warn(`Could not update existing offer ${existingOfferId}: ${putErr.message}`);
+      }
+    } else {
+      try {
+        const postRes = await client.post('/sell/inventory/v1/offer', offerPayload);
+        offerId = postRes.data?.offerId;
+      } catch (postErr: any) {
+        const msg = postErr.response?.data?.errors?.[0]?.message || postErr.message;
+        logger.error(`Could not create offer for SKU ${sku}: ${msg}`);
+        return { status: 'FAILED_OFFER_CREATE', error: msg };
+      }
+    }
+
+    if (!offerId) {
+      return { status: 'NO_OFFER_ID' };
+    }
+
+    // If already published, the PUT update was enough
+    if (existingStatus === 'PUBLISHED' && existingListingId) {
+      return { offerId, listingId: existingListingId, status: 'PUBLISHED' };
+    }
+
+    // Publish offer
+    try {
+      const pubRes = await client.post(`/sell/inventory/v1/offer/${offerId}/publish`);
+      const listingId = pubRes.data?.listingId || existingListingId;
+      logger.info(`Successfully published offer ${offerId} for SKU ${sku} on eBay! Listing ID: ${listingId}`);
+      return { offerId, listingId, status: 'PUBLISHED' };
+    } catch (pubErr: any) {
+      const errMsg = pubErr.response?.data?.errors?.[0]?.message || pubErr.message;
+      logger.warn(`Publish offer ${offerId} for SKU ${sku} returned: ${errMsg}`);
+      return { offerId, listingId: existingListingId, status: 'PUBLISH_PENDING', error: errMsg };
+    }
   }
 
   /**
@@ -322,13 +612,11 @@ export class EbayService {
   static async validateCredentials(host: string, token: string): Promise<boolean> {
     const client = this.getClient(host, token);
     try {
-      // Test request to eBay Inventory API endpoint
       const res = await client.get('/sell/inventory/v1/inventory_item?limit=1');
       return res.status >= 200 && res.status < 300;
     } catch (err: any) {
       const status = err.response?.status;
 
-      // If not an unauthorized 401, check if the account endpoint responds (e.g. fresh sandbox user with no inventory yet)
       if (status && status !== 401) {
         try {
           const fallbackRes = await client.get('/sell/account/v1/privilege');
@@ -336,7 +624,7 @@ export class EbayService {
             return true;
           }
         } catch {
-          // If fallback fails as well, throw the primary error below
+          // fallback failed
         }
       }
 
@@ -355,27 +643,71 @@ export class EbayService {
   }
 
   /**
-   * Fetch active inventory items from eBay
+   * Fetch inventory items with live offer pricing, listingId, and status from eBay
    */
-  static async getInventoryItems(host: string, token: string, limit = 100): Promise<any[]> {
-    const client = this.getClient(host, token);
+  static async getInventoryItems(
+    host: string,
+    token: string,
+    limit = 100,
+    connectionOrMarketplace?: any
+  ): Promise<any[]> {
+    const { locale, currency } = this.resolveMarketplace(connectionOrMarketplace);
+    const client = this.getClient(host, token, locale);
     try {
       const res = await client.get(`/sell/inventory/v1/inventory_item?limit=${limit}`);
       const rawItems = res.data?.inventoryItems || [];
-      return rawItems.map((item: any) => ({
-        sku: item.sku,
-        title: item.product?.title || item.sku,
-        description: item.product?.description || '',
-        price: item.offers?.[0]?.pricingSummary?.price?.value
-          ? parseFloat(item.offers[0].pricingSummary.price.value)
-          : 0,
-        quantity:
+      const enrichedItems: any[] = [];
+
+      for (const item of rawItems) {
+        let price = 0;
+        let itemCurrency = currency;
+        let listingId = '';
+        let offerStatus = 'UNPUBLISHED';
+        let offerId = '';
+
+        try {
+          const offRes = await client.get(`/sell/inventory/v1/offer?sku=${encodeURIComponent(item.sku)}`);
+          const offers = offRes.data?.offers || [];
+          if (offers.length > 0) {
+            const primaryOffer = offers.find((o: any) => o.status === 'PUBLISHED') || offers[0];
+            offerId = primaryOffer.offerId;
+            offerStatus = primaryOffer.status || 'UNPUBLISHED';
+            listingId = primaryOffer.listing?.listingId || '';
+            const pVal = primaryOffer.pricingSummary?.price?.value;
+            if (pVal) {
+              price = parseFloat(pVal);
+            }
+            if (primaryOffer.pricingSummary?.price?.currency) {
+              itemCurrency = primaryOffer.pricingSummary.price.currency;
+            }
+          }
+        } catch {
+          // No offer found
+        }
+
+        const quantity =
           item.availability?.shipToLocationAvailability?.quantity ??
           item.availability?.shipToHomeQuantity ??
-          0,
-        images: item.product?.imageUrls || [],
-        raw: item,
-      }));
+          0;
+
+        enrichedItems.push({
+          sku: item.sku,
+          title: item.product?.title || item.sku,
+          description: item.product?.description || '',
+          price,
+          currency: itemCurrency,
+          listingId,
+          offerId,
+          offerStatus,
+          isPublished: offerStatus === 'PUBLISHED',
+          quantity,
+          images: item.product?.imageUrls || [],
+          aspects: item.product?.aspects || {},
+          raw: item,
+        });
+      }
+
+      return enrichedItems;
     } catch (err: any) {
       logger.warn(`Could not fetch eBay inventory items: ${err.message}`);
       return [];
@@ -383,7 +715,7 @@ export class EbayService {
   }
 
   /**
-   * Create or update an inventory item on eBay
+   * Create or update an inventory item and published offer on eBay
    */
   static async setInventoryItem(
     host: string,
@@ -395,11 +727,24 @@ export class EbayService {
       quantity: number;
       price?: number;
       images?: string[];
+      brand?: string;
+      marketplaceId?: string;
+      aspects?: Record<string, string[]>;
     }
-  ): Promise<boolean> {
-    const client = this.getClient(host, token);
+  ): Promise<{ success: boolean; listingId?: string; offerId?: string; error?: string }> {
+    const marketplace = productData.marketplaceId || (sku.includes('GB') || host.includes('uk') ? 'EBAY_GB' : 'EBAY_GB');
+    const { locale, currency, marketplaceId } = this.resolveMarketplace(marketplace);
+    const client = this.getClient(host, token, locale);
+
     try {
+      const aspects = this.resolveAspects(productData.title, productData.brand, productData.aspects);
+      const validImages = (productData.images || []).filter((url) => typeof url === 'string' && url.startsWith('http'));
+      if (validImages.length === 0) {
+        validImages.push('https://i.ebayimg.com/images/g/default/s-l1600.jpg');
+      }
+
       const payload: any = {
+        locale,
         availability: {
           shipToLocationAvailability: {
             quantity: Math.max(0, productData.quantity),
@@ -409,24 +754,64 @@ export class EbayService {
         product: {
           title: productData.title.slice(0, 80),
           description: productData.description || productData.title,
-          imageUrls: productData.images || [],
+          imageUrls: validImages,
+          aspects,
         },
       };
 
-      const res = await client.put(`/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}`, payload);
-      return res.status === 204 || res.status === 200;
+      const invRes = await client.put(`/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}`, payload);
+      if (invRes.status !== 204 && invRes.status !== 200) {
+        return { success: false, error: `Failed to set inventory item (${invRes.status})` };
+      }
+
+      let listingId: string | undefined;
+      let offerId: string | undefined;
+
+      if (typeof productData.price === 'number' && productData.price > 0) {
+        const merchantLocationKey = await this.ensureMerchantLocation(client);
+        const policies = await this.ensureListingPolicies(client, marketplaceId);
+
+        const offerResult = await this.createOrUpdateAndPublishOffer(client, sku, {
+          marketplaceId,
+          currency,
+          price: productData.price,
+          quantity: productData.quantity,
+          title: productData.title,
+          policies,
+          merchantLocationKey,
+        });
+
+        listingId = offerResult.listingId;
+        offerId = offerResult.offerId;
+      }
+
+      return { success: true, listingId, offerId };
     } catch (err: any) {
-      logger.error(`Failed to set eBay inventory item for SKU ${sku}: ${err.message}`);
-      return false;
+      const errMsg = err.response?.data?.errors?.[0]?.message || err.message;
+      logger.error(`Failed to set eBay inventory item for SKU ${sku}: ${errMsg}`);
+      return { success: false, error: errMsg };
     }
   }
 
   /**
-   * Delete an inventory item from eBay
+   * Delete an inventory item and associated offers from eBay
    */
   static async deleteInventoryItem(host: string, token: string, sku: string): Promise<boolean> {
     const client = this.getClient(host, token);
     try {
+      try {
+        const offRes = await client.get(`/sell/inventory/v1/offer?sku=${encodeURIComponent(sku)}`);
+        const offers = offRes.data?.offers || [];
+        for (const o of offers) {
+          if (o.status === 'PUBLISHED' && o.offerId) {
+            await client.post(`/sell/inventory/v1/offer/${o.offerId}/withdraw`).catch(() => {});
+          }
+          if (o.offerId) {
+            await client.delete(`/sell/inventory/v1/offer/${o.offerId}`).catch(() => {});
+          }
+        }
+      } catch {}
+
       const res = await client.delete(`/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}`);
       logger.info(`Successfully deleted eBay inventory item for SKU ${sku} on ${host}`);
       return res.status === 204 || res.status === 200;
@@ -440,3 +825,4 @@ export class EbayService {
     }
   }
 }
+

@@ -559,15 +559,20 @@ export class MappingsController {
             .map((img: any) => (typeof img === 'string' ? img : img.url))
             .filter(Boolean);
 
-          await EbayService.setInventoryItem(host, token, variant.sku, {
+          const setResult = await EbayService.setInventoryItem(host, token, variant.sku, {
             title: prod.title,
             description: prod.description || prod.title,
             quantity: 10,
             price: variant.retailPrice,
             images,
+            brand: prod.brand || 'Generic',
+            marketplaceId: conn.config?.marketplaceId || (conn.name.toLowerCase().includes('uk') ? 'EBAY_GB' : undefined),
           });
 
           if (chProd) {
+            if (setResult.listingId) {
+              chProd.externalProductId = setResult.listingId;
+            }
             chProd.status = ChannelProductStatus.ACTIVE;
             chProd.syncStatus = SyncStatus.SYNCED;
             chProd.lastSyncedAt = new Date();
