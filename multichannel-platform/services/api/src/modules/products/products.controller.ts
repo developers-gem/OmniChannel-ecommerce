@@ -455,6 +455,7 @@ export class ProductsController {
                 price: product.defaultRetailPrice || chProd.price,
                 images: (product.images || []).map((img: any) => typeof img === 'string' ? img : img.url).filter(Boolean),
                 brand: product.brand,
+                category: product.category,
                 marketplaceId: conn.config?.marketplaceId || (conn.name.toLowerCase().includes('uk') ? 'EBAY_GB' : undefined),
               });
               await ChannelProduct.findByIdAndUpdate(chProd._id, {
@@ -1231,24 +1232,56 @@ export class ProductsController {
                 price: finalPrice,
                 images,
                 brand: product.brand || 'Generic',
+                category: product.category,
                 marketplaceId: conn.config?.marketplaceId || (conn.name.toLowerCase().includes('uk') ? 'EBAY_GB' : undefined),
               });
 
-              if (!setResult.success) {
-                throw new Error(setResult.error || `Failed to publish SKU ${platformVariant.sku} to eBay`);
+              if (!setResult.success || !setResult.listingId) {
+                const failReason = setResult.error || `Publishing to eBay failed for SKU ${platformVariant.sku}: no confirmed ItemID returned from eBay`;
+                logger.error(`[eBay Outbound Sync Failed] ${failReason}`);
+
+                // Update ChannelProduct with failed status; DO NOT create or assume mapping
+                await ChannelProduct.findOneAndUpdate(
+                  {
+                    organizationId: req.tenantId,
+                    channelConnectionId: conn._id,
+                    sku: platformVariant.sku,
+                  },
+                  {
+                    channelType: ChannelType.EBAY,
+                    externalProductId: setResult.offerId || platformVariant.sku,
+                    externalVariantId: platformVariant.sku,
+                    title: variantTitle,
+                    sku: platformVariant.sku,
+                    price: finalPrice,
+                    inventoryQuantity: stock,
+                    status: ChannelProductStatus.ERROR,
+                    syncStatus: SyncStatus.FAILED,
+                    lastSyncedAt: new Date(),
+                    rawPayload: {
+                      sku: platformVariant.sku,
+                      error: failReason,
+                      offerId: setResult.offerId,
+                    },
+                  },
+                  { upsert: true, new: true }
+                );
+
+                throw new Error(failReason);
               }
 
-              const listingId = setResult.listingId || platformVariant.sku;
+              const listingId = setResult.listingId;
               const channelProd = await ChannelProduct.findOneAndUpdate(
                 {
                   organizationId: req.tenantId,
                   channelConnectionId: conn._id,
-                  sku: platformVariant.sku,
+                  $or: [{ sku: platformVariant.sku }, { externalProductId: listingId }],
                 },
                 {
                   channelType: ChannelType.EBAY,
                   externalProductId: listingId,
                   externalVariantId: platformVariant.sku,
+                  externalListingId: listingId,
                   title: variantTitle,
                   sku: platformVariant.sku,
                   barcode: platformVariant.barcode || '',
@@ -1269,6 +1302,7 @@ export class ProductsController {
                 { upsert: true, new: true }
               );
 
+              // Update mapping record strictly after receiving confirmed success response and ItemID from eBay
               const mapping = await ProductMapping.findOneAndUpdate(
                 {
                   organizationId: req.tenantId,
@@ -1286,6 +1320,7 @@ export class ProductsController {
                     syncPrice: true,
                     syncInventory: true,
                     status: MappingStatus.MAPPED,
+                    updatedAt: new Date(),
                   },
                   $unset: {
                     unmappedAt: 1,

@@ -26,6 +26,7 @@ import { logger } from '../../utils/logger';
 import { NotificationService } from '../../services/notification.service';
 import { ShopifyService } from '../../services/shopify.service';
 import { EbayService } from '../../services/ebay.service';
+import { EbayIngestionService } from '../../services/ebay-ingestion.service';
 
 export class WebhooksController {
   /**
@@ -516,44 +517,43 @@ export class WebhooksController {
 
   private static async processEbayNotification(connection: any, payload: any) {
     try {
-      const topic = payload?.metadata?.topic || '';
-      const data = payload?.notification?.data || payload;
+      const topic = payload?.metadata?.topic || (payload?.topic as string) || '';
+      const data = payload?.notification?.data || payload?.Item || payload;
 
       logger.info(`Processing eBay notification: topic=${topic} for connection=${connection.name}`);
 
       const sku = (data.sku || data.SKU || data.customLabel || '').trim();
-      const listingId = data.listingId || data.itemId || data.offerId || '';
+      const listingId = String(data.listingId || data.itemId || data.ItemID || data.offerId || '').trim();
 
-      if (sku) {
+      if (sku || listingId) {
+        let fetchedItem: any = null;
         try {
           const { host, token } = await EbayService.getValidCredentials(connection);
-          const fetchedItem = await EbayService.getInventoryItem(host, token, sku);
-          if (fetchedItem) {
-            await EbayService.ingestEbayProduct({
-              organizationId: connection.organizationId,
-              connection,
-              ebayItem: {
-                ...fetchedItem,
-                sku,
-                listingId: listingId || fetchedItem.listingId,
-              },
-            });
-            logger.info(`Successfully ingested eBay item SKU ${sku} via webhook`);
+          if (sku) {
+            fetchedItem = await EbayService.getInventoryItem(host, token, sku);
           }
         } catch (fetchErr: any) {
-          await EbayService.ingestEbayProduct({
-            organizationId: connection.organizationId,
-            connection,
-            ebayItem: {
-              sku,
-              listingId,
-              title: data.title || sku,
-              price: data.price || 0,
-              quantity: data.quantity || 0,
-            },
-          });
-          logger.info(`Ingested eBay item SKU ${sku} directly from webhook payload`);
+          logger.warn(`Could not fetch live eBay details for SKU ${sku}: ${fetchErr.message}`);
         }
+
+        const rawPrice = data.price?.value || data.price || data.SellingStatus?.CurrentPrice?.Value || 0;
+        const rawQty = data.quantity ?? data.availableQuantity ?? data.Quantity ?? 0;
+
+        await EbayIngestionService.ingestItem({
+          organizationId: connection.organizationId,
+          connection,
+          ebayItem: {
+            ...(fetchedItem || {}),
+            sku: sku || fetchedItem?.sku,
+            listingId: listingId || fetchedItem?.listingId,
+            title: data.title || data.Title || fetchedItem?.title || sku || `eBay Item ${listingId}`,
+            description: data.description || fetchedItem?.description || '',
+            price: rawPrice || fetchedItem?.price || 0,
+            quantity: rawQty || fetchedItem?.quantity || 0,
+            raw: data,
+          },
+        });
+        logger.info(`Successfully ingested/updated eBay item (SKU: ${sku || 'N/A'}, ItemID: ${listingId}) via webhook`);
       } else {
         const upperTopic = topic.toUpperCase();
         if (

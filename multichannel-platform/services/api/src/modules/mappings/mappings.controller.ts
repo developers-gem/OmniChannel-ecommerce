@@ -201,16 +201,23 @@ export class MappingsController {
       // Check if already mapped
       const existingMapping = await ProductMapping.findOne({
         organizationId: req.tenantId,
-        channelProductId: channelProduct._id,
+        $or: [
+          { channelProductId: channelProduct._id },
+          { canonicalVariantId: variant._id, channelConnectionId: channelProduct.channelConnectionId },
+        ],
       });
 
       if (existingMapping) {
         existingMapping.canonicalProductId = variant.canonicalProductId;
         existingMapping.canonicalVariantId = variant._id;
+        existingMapping.channelConnectionId = channelProduct.channelConnectionId;
+        existingMapping.channelProductId = channelProduct._id;
         existingMapping.syncPrice = syncPrice ?? true;
         existingMapping.syncInventory = syncInventory ?? true;
         existingMapping.priceModifier = priceModifier;
         existingMapping.status = MappingStatus.MAPPED;
+        existingMapping.unmappedAt = undefined;
+        existingMapping.unmappedReason = undefined;
         await existingMapping.save();
 
         return res.json({

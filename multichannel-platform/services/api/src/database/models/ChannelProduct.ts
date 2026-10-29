@@ -114,6 +114,9 @@ ChannelProductSchema.index(
   { unique: true }
 );
 
+ChannelProductSchema.index({ organizationId: 1, channelConnectionId: 1, sku: 1 });
+ChannelProductSchema.index({ organizationId: 1, channelConnectionId: 1, externalListingId: 1 });
+
 export const ChannelProduct = mongoose.model<IChannelProductDocument>(
   'ChannelProduct',
   ChannelProductSchema

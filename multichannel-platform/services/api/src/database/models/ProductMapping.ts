@@ -108,7 +108,21 @@ ProductMappingSchema.index(
   { unique: true }
 );
 
+// Prevent duplicate active mappings between the same canonical variant and channel connection
+ProductMappingSchema.index(
+  {
+    organizationId: 1,
+    canonicalVariantId: 1,
+    channelConnectionId: 1,
+  },
+  {
+    unique: true,
+    partialFilterExpression: { status: 'MAPPED' },
+  }
+);
+
 ProductMappingSchema.index({ organizationId: 1, canonicalVariantId: 1 });
+ProductMappingSchema.index({ organizationId: 1, canonicalProductId: 1 });
 ProductMappingSchema.index({ organizationId: 1, status: 1 });
 
 export const ProductMapping = mongoose.model<IProductMappingDocument>(

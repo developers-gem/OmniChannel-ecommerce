@@ -306,6 +306,30 @@ export class SyncController {
             logger.info(`Price sync finished. Synced ${syncedCount} items.`);
           }
 
+          // 4. RECONCILIATION: Check mapped items against eBay live status and resolve discrepancies
+          else if (jobType === SyncJobType.RECONCILIATION) {
+            const connections = connection
+              ? [connection]
+              : await ChannelConnection.find({
+                  organizationId: req.tenantId,
+                  status: ChannelStatus.ACTIVE,
+                });
+
+            for (const conn of connections) {
+              if (conn.channelType === ChannelType.EBAY) {
+                try {
+                  const reconResult = await EbayService.reconcileEbaySync(req.tenantId, conn);
+                  syncedCount += reconResult.verifiedCount + reconResult.newlyIngestedCount;
+                  logger.info(
+                    `Reconciliation finished for ${conn.name}: ${reconResult.verifiedCount} verified, ${reconResult.discrepanciesResolvedCount} discrepancies resolved, ${reconResult.newlyIngestedCount} ingested.`
+                  );
+                } catch (reconErr: any) {
+                  logger.error(`Reconciliation error for ${conn.name}: ${reconErr.message}`);
+                }
+              }
+            }
+          }
+
           syncJob.status = SyncJobStatus.COMPLETED;
           syncJob.finishedAt = new Date();
           syncJob.details = {
@@ -415,22 +439,24 @@ export class SyncController {
             const activeSkus = new Set<string>();
 
             for (const item of items) {
-              if (!item.sku) continue;
-              activeSkus.add(item.sku.toUpperCase().trim());
-              const listingId = item.listingId || item.sku;
+              const sku = (item.sku || '').trim();
+              const listingId = String(item.listingId || item.sku || '').trim();
+              const cleanSku = (sku || (listingId ? `EBAY-${listingId}` : `EBAY-ITEM-${Date.now()}`)).toUpperCase().trim();
+              activeSkus.add(cleanSku);
+
 
               await ChannelProduct.findOneAndUpdate(
                 {
                   organizationId: req.tenantId,
                   channelConnectionId: conn._id,
-                  sku: item.sku.toUpperCase().trim(),
+                  sku: cleanSku,
                 },
                 {
                   channelType: ChannelType.EBAY,
                   externalProductId: listingId,
-                  externalVariantId: item.sku,
+                  externalVariantId: cleanSku,
                   title: item.title,
-                  sku: item.sku ? item.sku.toUpperCase().trim() : undefined,
+                  sku: cleanSku,
                   barcode: '',
                   price: item.price || 0,
                   inventoryQuantity: item.quantity || 0,
@@ -761,6 +787,57 @@ export class SyncController {
       return res.status(500).json({
         success: false,
         error: { message: error.message || 'Failed to retry sync job' },
+      });
+    }
+  }
+
+
+  // POST /api/v1/sync/reconcile-ebay - Verify mapped items exist on eBay and resolve discrepancies automatically
+  static async reconcileEbay(req: Request, res: Response) {
+    try {
+      const { channelConnectionId } = req.body;
+      const connQuery: any = {
+        organizationId: req.tenantId,
+        channelType: ChannelType.EBAY,
+        status: ChannelStatus.ACTIVE,
+      };
+      if (channelConnectionId) {
+        connQuery._id = channelConnectionId;
+      }
+
+      const connections = await ChannelConnection.find(connQuery);
+      if (connections.length === 0) {
+        return res.status(404).json({
+          success: false,
+          error: { message: 'No active eBay channel connection found', code: 'NO_EBAY_CONNECTION' },
+        });
+      }
+
+      const allResults: any[] = [];
+      for (const conn of connections) {
+        const result = await EbayService.reconcileEbaySync(req.tenantId, conn);
+        allResults.push({
+          channelConnectionId: conn._id,
+          channelName: conn.name,
+          ...result,
+        });
+      }
+
+      return res.json({
+        success: true,
+        data: {
+          results: allResults,
+          message: `Reconciliation check completed for ${connections.length} eBay connection(s).`,
+        },
+      });
+    } catch (error: any) {
+      logger.error('Failed to run eBay reconciliation:', error);
+      return res.status(500).json({
+        success: false,
+        error: { message: error.message || 'Failed to run eBay reconciliation' },
+
+
+
       });
     }
   }

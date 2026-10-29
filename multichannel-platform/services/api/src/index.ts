@@ -104,6 +104,7 @@ let server: any;
 
 export async function startServer() {
   await connectDatabase();
+  SyncSchedulerService.start();
   server = app.listen(config.port, '0.0.0.0', () => {
     logger.info(`Multichannel API running on http://0.0.0.0:${config.port}`);
   });

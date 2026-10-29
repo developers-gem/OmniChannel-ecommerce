@@ -305,6 +305,17 @@ export class ChannelsController {
         }
       }
 
+      if (channelType === ChannelType.EBAY) {
+        (async () => {
+          try {
+            const { syncedCount } = await EbayService.syncAllEbayProducts(connection, req.tenantId);
+            logger.info(`Initial eBay catalog auto-import finished for ${name}: ${syncedCount} products`);
+          } catch (impErr: any) {
+            logger.warn(`Initial eBay catalog import failed for ${name}: ${impErr.message}`);
+          }
+        })();
+      }
+
       const connObj = connection.toObject();
       const idStr = connection._id.toString();
 
