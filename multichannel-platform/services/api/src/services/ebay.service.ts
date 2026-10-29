@@ -2,8 +2,23 @@ import axios from 'axios';
 import { decryptSecret, encryptSecret } from '../utils/crypto';
 import { logger } from '../utils/logger';
 import { config } from '../config';
-import { ChannelConnection } from '../database/models';
-import { ChannelStatus } from '@multichannel/shared';
+import {
+  ChannelConnection,
+  CanonicalProduct,
+  ProductVariant,
+  InventoryItem,
+  ChannelProduct,
+  ProductMapping,
+} from '../database/models';
+import {
+  ChannelStatus,
+  ChannelType,
+  ChannelProductStatus,
+  SyncStatus,
+  MappingStatus,
+  MappingConfidence,
+  ProductStatus,
+} from '@multichannel/shared';
 
 export interface EbayCredentials {
   host: string;
@@ -346,19 +361,34 @@ export class EbayService {
    */
   static resolveAspects(title: string, brand?: string, customAspects?: Record<string, string[]>): Record<string, string[]> {
     const aspects: Record<string, string[]> = { ...(customAspects || {}) };
+    const effectiveBrand = brand && brand !== 'Generic' ? brand : 'Brother';
     if (!aspects['Brand']) {
-      aspects['Brand'] = [brand || 'Generic'];
+      aspects['Brand'] = [brand || 'Brother'];
     }
     if (!aspects['Type']) {
       aspects['Type'] = ['Original'];
     }
-    const t = title.toLowerCase();
-    if (t.includes('ink') || t.includes('cartridge')) {
-      if (!aspects['Compatible Brand']) aspects['Compatible Brand'] = ['For HP'];
-      if (!aspects['Colour']) aspects['Colour'] = ['Black'];
+    const t = (title + ' ' + (brand || '')).toLowerCase();
+    const isHeadphones = t.includes('headphone') || t.includes('earphone') || t.includes('audio');
+    const isWatch = t.includes('watch') || t.includes('fitness');
+    const isStationery = t.includes('pen') || t.includes('stationery') || t.includes('notebook');
+
+    if (!isHeadphones && !isWatch && !isStationery) {
+      // Default to Ink & Toner category requirements
+      if (!aspects['Compatible Brand']) {
+        const comp = effectiveBrand.replace(/^For\s+/i, '');
+        aspects['Compatible Brand'] = [`For ${comp}`];
+      }
+      if (!aspects['Colour']) {
+        if (t.includes('yellow') || t.includes('xly') || /\by\b/.test(t)) aspects['Colour'] = ['Yellow'];
+        else if (t.includes('magenta') || t.includes('xlm') || /\bm\b/.test(t)) aspects['Colour'] = ['Magenta'];
+        else if (t.includes('cyan') || t.includes('xlc') || /\bc\b/.test(t)) aspects['Colour'] = ['Cyan'];
+        else aspects['Colour'] = ['Black'];
+      }
       if (!aspects['Print Technology']) aspects['Print Technology'] = ['Inkjet'];
     }
-    if (t.includes('headphone') || t.includes('earphone')) {
+
+    if (isHeadphones) {
       if (!aspects['Connectivity']) aspects['Connectivity'] = ['Bluetooth'];
       if (!aspects['Model']) aspects['Model'] = ['Universal'];
     }
@@ -385,30 +415,58 @@ export class EbayService {
   /**
    * Ensure merchant warehouse location is present on eBay account
    */
-  static async ensureMerchantLocation(client: any): Promise<string> {
+  static async ensureMerchantLocation(client: any, marketplaceId = 'EBAY_GB'): Promise<string> {
+    const isUK = marketplaceId === 'EBAY_GB';
+    const targetCountry = isUK ? 'GB' : 'US';
+
+
     try {
-      const res = await client.get('/sell/inventory/v1/location?limit=5');
+      const res = await client.get('/sell/inventory/v1/location?limit=20');
       const locs = res.data?.locations || [];
-      if (locs.length > 0 && locs[0].merchantLocationKey) {
-        return locs[0].merchantLocationKey;
+
+      // Find an enabled location that matches the required country
+      const matched = locs.find(
+        (l: any) =>
+          l.merchantLocationStatus === 'ENABLED' &&
+          (l.location?.address?.country || '').toUpperCase() === targetCountry
+      );
+
+      if (matched?.merchantLocationKey) {
+        return matched.merchantLocationKey;
+      }
+
+      // If any enabled location has a country match
+      const countryMatch = locs.find(
+        (l: any) => (l.location?.address?.country || '').toUpperCase() === targetCountry
+      );
+      if (countryMatch?.merchantLocationKey) {
+        return countryMatch.merchantLocationKey;
       }
     } catch (e: any) {
       logger.warn(`Could not list eBay merchant locations: ${e.message}`);
     }
 
-    const defaultKey = 'sandbox-warehouse-1';
+    const defaultKey = isUK ? 'uk-warehouse-1' : 'us-warehouse-1';
     try {
       await client.post(`/sell/inventory/v1/location/${defaultKey}`, {
         location: {
-          address: {
-            addressLine1: '123 Logistics Way',
-            city: 'London',
-            stateOrProvince: 'London',
-            postalCode: 'EC1A 1BB',
-            country: 'GB',
-          },
+          address: isUK
+            ? {
+              addressLine1: '123 Logistics Way',
+              city: 'London',
+              stateOrProvince: 'London',
+              postalCode: 'EC1A 1BB',
+              country: 'GB',
+            }
+            : {
+              addressLine1: '2145 Hamilton Ave',
+              city: 'San Jose',
+              stateOrProvince: 'CA',
+              postalCode: '95008',
+              country: 'US',
+            },
         },
-        name: 'Main Warehouse',
+        name: isUK ? 'UK Main Warehouse' : 'US Main Warehouse',
         merchantLocationStatus: 'ENABLED',
         locationTypes: ['WAREHOUSE'],
       });
@@ -602,7 +660,7 @@ export class EbayService {
     } catch (pubErr: any) {
       const errMsg = pubErr.response?.data?.errors?.[0]?.message || pubErr.message;
       logger.warn(`Publish offer ${offerId} for SKU ${sku} returned: ${errMsg}`);
-      return { offerId, listingId: existingListingId, status: 'PUBLISH_PENDING', error: errMsg };
+      return { offerId, listingId: existingListingId || offerId, status: 'PUBLISH_PENDING', error: errMsg };
     }
   }
 
@@ -639,6 +697,73 @@ export class EbayService {
       );
       detailedError.status = status;
       throw detailedError;
+    }
+  }
+
+  /**
+   * Fetch a single inventory item with live offer pricing, listingId, and status from eBay
+   */
+  static async getInventoryItem(
+    host: string,
+    token: string,
+    sku: string,
+    connectionOrMarketplace?: any
+  ): Promise<any | null> {
+    const { locale, currency } = this.resolveMarketplace(connectionOrMarketplace);
+    const client = this.getClient(host, token, locale);
+    try {
+      const res = await client.get(`/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}`);
+      const item = res.data;
+      if (!item) return null;
+
+      let price = 0;
+      let itemCurrency = currency;
+      let listingId = '';
+      let offerStatus = 'UNPUBLISHED';
+      let offerId = '';
+
+      try {
+        const offRes = await client.get(`/sell/inventory/v1/offer?sku=${encodeURIComponent(sku)}`);
+        const offers = offRes.data?.offers || [];
+        if (offers.length > 0) {
+          const primaryOffer = offers.find((o: any) => o.status === 'PUBLISHED') || offers[0];
+          offerId = primaryOffer.offerId;
+          offerStatus = primaryOffer.status || 'UNPUBLISHED';
+          listingId = primaryOffer.listing?.listingId || '';
+          const pVal = primaryOffer.pricingSummary?.price?.value;
+          if (pVal) {
+            price = parseFloat(pVal);
+          }
+          if (primaryOffer.pricingSummary?.price?.currency) {
+            itemCurrency = primaryOffer.pricingSummary.price.currency;
+          }
+        }
+      } catch {
+        // No offer found
+      }
+
+      const quantity =
+        item.availability?.shipToLocationAvailability?.quantity ??
+        item.availability?.shipToHomeQuantity ??
+        0;
+
+      return {
+        sku: item.sku,
+        title: item.product?.title || item.sku,
+        description: item.product?.description || '',
+        price,
+        currency: itemCurrency,
+        quantity,
+        listingId,
+        offerId,
+        offerStatus,
+        aspects: item.product?.aspects || {},
+        images: item.product?.imageUrls || [],
+        raw: item,
+      };
+    } catch (err: any) {
+      logger.warn(`Failed to fetch eBay inventory item SKU ${sku}: ${err.message}`);
+      return null;
     }
   }
 
@@ -768,7 +893,7 @@ export class EbayService {
       let offerId: string | undefined;
 
       if (typeof productData.price === 'number' && productData.price > 0) {
-        const merchantLocationKey = await this.ensureMerchantLocation(client);
+        const merchantLocationKey = await this.ensureMerchantLocation(client, marketplaceId);
         const policies = await this.ensureListingPolicies(client, marketplaceId);
 
         const offerResult = await this.createOrUpdateAndPublishOffer(client, sku, {
@@ -804,13 +929,13 @@ export class EbayService {
         const offers = offRes.data?.offers || [];
         for (const o of offers) {
           if (o.status === 'PUBLISHED' && o.offerId) {
-            await client.post(`/sell/inventory/v1/offer/${o.offerId}/withdraw`).catch(() => {});
+            await client.post(`/sell/inventory/v1/offer/${o.offerId}/withdraw`).catch(() => { });
           }
           if (o.offerId) {
-            await client.delete(`/sell/inventory/v1/offer/${o.offerId}`).catch(() => {});
+            await client.delete(`/sell/inventory/v1/offer/${o.offerId}`).catch(() => { });
           }
         }
-      } catch {}
+      } catch { }
 
       const res = await client.delete(`/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}`);
       logger.info(`Successfully deleted eBay inventory item for SKU ${sku} on ${host}`);
@@ -824,5 +949,213 @@ export class EbayService {
       return false;
     }
   }
-}
 
+  /**
+   * Automatically ingest and map an eBay item into the Master Catalog and Channel Products
+   */
+  static async ingestEbayProduct(params: {
+    organizationId: any;
+    connection: any;
+    ebayItem: any;
+  }): Promise<{ canonicalProductId: any; mappedCount: number }> {
+    const { organizationId, connection, ebayItem } = params;
+    const rawSku = (ebayItem.sku || '').trim();
+    if (!rawSku) {
+      return { canonicalProductId: null, mappedCount: 0 };
+    }
+    const cleanSku = rawSku.toUpperCase();
+    const title = ebayItem.title || ebayItem.product?.title || rawSku;
+    const description = ebayItem.description || ebayItem.product?.description || title;
+    const price = typeof ebayItem.price === 'number' ? ebayItem.price : (parseFloat(ebayItem.price) || 0);
+    const quantity = typeof ebayItem.quantity === 'number' ? ebayItem.quantity : (parseInt(ebayItem.quantity) || 0);
+    const listingId = ebayItem.listingId || ebayItem.offerId || cleanSku;
+    const offerId = ebayItem.offerId || '';
+    const images = Array.isArray(ebayItem.images) && ebayItem.images.length > 0
+      ? ebayItem.images
+      : (ebayItem.product?.imageUrls || []);
+    const brand = ebayItem.aspects?.Brand?.[0] || ebayItem.product?.aspects?.Brand?.[0] || 'Generic';
+    const category = ebayItem.aspects?.Type?.[0] || ebayItem.product?.aspects?.Type?.[0] || 'General';
+
+    // 1. Find or create ChannelProduct
+    const channelProduct = await ChannelProduct.findOneAndUpdate(
+      {
+        organizationId,
+        channelConnectionId: connection._id,
+        $or: [
+          { sku: cleanSku },
+          { externalProductId: listingId },
+        ],
+      },
+      {
+        channelType: ChannelType.EBAY,
+        externalProductId: listingId,
+        externalVariantId: cleanSku,
+        title,
+        sku: cleanSku,
+        barcode: '',
+        price,
+        inventoryQuantity: quantity,
+        status: ChannelProductStatus.ACTIVE,
+        syncStatus: SyncStatus.SYNCED,
+        lastSyncedAt: new Date(),
+        rawPayload: {
+          ebayItem: ebayItem.raw || ebayItem,
+          images,
+          description,
+          listingId,
+          offerId,
+        },
+      },
+      { upsert: true, new: true }
+    );
+
+    // 2. Find or match CanonicalProduct
+    let canonicalProduct = await CanonicalProduct.findOne({
+      organizationId,
+      $or: [
+        { masterSku: cleanSku },
+        { title: { $regex: `^${title.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } },
+      ],
+    });
+
+    if (!canonicalProduct) {
+      const existingVariant = await ProductVariant.findOne({
+        organizationId,
+        sku: cleanSku,
+      });
+
+      if (existingVariant) {
+        canonicalProduct = await CanonicalProduct.findById(existingVariant.canonicalProductId);
+      }
+    }
+
+    if (!canonicalProduct) {
+      canonicalProduct = await CanonicalProduct.create({
+        organizationId,
+        title,
+        masterSku: cleanSku,
+        description,
+        brand,
+        category,
+        tags: ['eBay'],
+        images: images.map((url: string, idx: number) => ({
+          url,
+          altText: title,
+          position: idx + 1,
+          isPrimary: idx === 0,
+        })),
+        defaultCostPrice: 0,
+        defaultRetailPrice: price,
+        totalVariants: 1,
+        status: ProductStatus.ACTIVE,
+      });
+    }
+
+    // 3. Find or create ProductVariant
+    let variant = await ProductVariant.findOne({
+      organizationId,
+      canonicalProductId: canonicalProduct._id,
+      sku: cleanSku,
+    });
+
+    if (!variant) {
+      variant = await ProductVariant.create({
+        organizationId,
+        canonicalProductId: canonicalProduct._id,
+        sku: cleanSku,
+        title,
+        costPrice: 0,
+        retailPrice: price,
+      });
+    } else {
+      if (price > 0 && (!variant.retailPrice || variant.retailPrice === 0)) {
+        variant.retailPrice = price;
+        await variant.save();
+      }
+    }
+
+    // 4. Ensure InventoryItem exists
+    let invItem = await InventoryItem.findOne({
+      organizationId,
+      canonicalVariantId: variant._id,
+    });
+
+    if (!invItem) {
+      invItem = await InventoryItem.create({
+        organizationId,
+        canonicalVariantId: variant._id,
+        sku: cleanSku,
+        trackedStock: Math.max(0, quantity),
+        reservedStock: 0,
+        safetyStock: 0,
+        availableToAllocate: Math.max(0, quantity),
+        lowStockThreshold: 5,
+      });
+    }
+
+    // 5. Establish strict ProductMapping
+    await ProductMapping.findOneAndUpdate(
+      {
+        organizationId,
+        canonicalVariantId: variant._id,
+        channelConnectionId: connection._id,
+      },
+      {
+        $set: {
+          canonicalProductId: canonicalProduct._id,
+          canonicalVariantId: variant._id,
+          channelConnectionId: connection._id,
+          channelProductId: channelProduct._id,
+          channelType: ChannelType.EBAY,
+          mappingConfidence: MappingConfidence.EXACT_SKU,
+          syncPrice: true,
+          syncInventory: true,
+          status: MappingStatus.MAPPED,
+          updatedAt: new Date(),
+        },
+        $unset: {
+          unmappedAt: 1,
+          unmappedReason: 1,
+        },
+      },
+      { upsert: true, new: true }
+    );
+
+    return {
+      canonicalProductId: canonicalProduct._id,
+      mappedCount: 1,
+    };
+  }
+
+  /**
+   * Bulk import / sync all inventory items from an eBay store connection
+   */
+  static async syncAllEbayProducts(
+    connection: any,
+    organizationId: any
+  ): Promise<{ totalItems: number; syncedCount: number }> {
+    const { host, token } = await this.getValidCredentials(connection);
+    const items = await this.getInventoryItems(host, token, 100, connection);
+    let syncedCount = 0;
+
+    for (const item of items) {
+      if (!item.sku) continue;
+      try {
+        const { mappedCount } = await this.ingestEbayProduct({
+          organizationId,
+          connection,
+          ebayItem: item,
+        });
+        syncedCount += mappedCount;
+      } catch (err: any) {
+        logger.warn(`Failed to ingest eBay item SKU ${item.sku}: ${err.message}`);
+      }
+    }
+
+    connection.lastSyncAt = new Date();
+    await connection.save();
+
+    return { totalItems: items.length, syncedCount };
+  }
+
+}

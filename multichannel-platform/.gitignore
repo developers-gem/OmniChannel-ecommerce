@@ -1,15 +1,25 @@
 node_modules/
-# dist/
-# build/
-# .next/
-# out/
-# .env
-# .env.local
-# .env.production
-# *.log
-# npm-debug.log*
-# yarn-debug.log*
-# yarn-error.log*
-# .DS_Store
-# coverage/
-# .turbo/
+dist/
+build/
+.next/
+out/
+.env
+.env.local
+.env.production
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+coverage/
+.turbo/
+
+
+
+
+
+
+
+
+
+

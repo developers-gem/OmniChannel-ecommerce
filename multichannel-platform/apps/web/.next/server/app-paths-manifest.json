@@ -1,10 +1,8 @@
 {
-  "/(dashboard)/mappings/page": "app/(dashboard)/mappings/page.js",
   "/(dashboard)/products/page": "app/(dashboard)/products/page.js",
-  "/(dashboard)/pnl/page": "app/(dashboard)/pnl/page.js",
-  "/(dashboard)/channels/page": "app/(dashboard)/channels/page.js",
-  "/(dashboard)/sync-jobs/page": "app/(dashboard)/sync-jobs/page.js",
   "/(dashboard)/notifications/page": "app/(dashboard)/notifications/page.js",
   "/(dashboard)/products/new/page": "app/(dashboard)/products/new/page.js",
-  "/(dashboard)/inventory/page": "app/(dashboard)/inventory/page.js"
+  "/(dashboard)/dashboard/page": "app/(dashboard)/dashboard/page.js",
+  "/(dashboard)/mappings/page": "app/(dashboard)/mappings/page.js",
+  "/(dashboard)/channels/page": "app/(dashboard)/channels/page.js"
 }

@@ -25,6 +25,7 @@ import { decryptSecret } from '../../utils/crypto';
 import { logger } from '../../utils/logger';
 import { NotificationService } from '../../services/notification.service';
 import { ShopifyService } from '../../services/shopify.service';
+import { EbayService } from '../../services/ebay.service';
 
 export class WebhooksController {
   /**
@@ -107,11 +108,49 @@ export class WebhooksController {
    * POST /api/v1/webhooks/ebay/:connectionId
    * Handles eBay marketplace notifications
    */
+  /**
+   * GET /api/v1/webhooks/ebay/:connectionId
+   * Handles eBay marketplace notification endpoint verification challenge
+   */
+  static async handleEbayChallenge(req: any, res: Response) {
+    try {
+      const { connectionId } = req.params;
+      const challengeCode = req.query.challenge_code as string;
+      if (!challengeCode) {
+        return res.status(400).json({ error: 'Missing challenge_code query parameter' });
+      }
+
+      const connection = await ChannelConnection.findById(connectionId);
+      const verificationToken = connection?.credentials?.webhookSecret
+        ? decryptSecret(connection.credentials.webhookSecret)
+        : (connection?.credentials?.apiSecret ? decryptSecret(connection.credentials.apiSecret) : 'multichannel_verification_token');
+
+      const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+      const host = req.get('host');
+      const endpoint = `${protocol}://${host}/api/v1/webhooks/ebay/${connectionId}`;
+
+      const challengeResponse = crypto
+        .createHash('sha256')
+        .update(challengeCode + verificationToken + endpoint)
+        .digest('hex');
+
+      res.setHeader('Content-Type', 'application/json');
+      return res.status(200).json({ challengeResponse });
+    } catch (err: any) {
+      logger.error('eBay challenge verification error:', err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  }
+
+  /**
+   * POST /api/v1/webhooks/ebay/:connectionId
+   * Handles eBay marketplace notifications
+   */
   static async handleEbay(req: any, res: Response) {
     try {
       const { connectionId } = req.params;
-      const eventId = req.headers['x-ebay-notification-id'] as string || req.body?.metadata?.topic || `ebay_${Date.now()}`;
-      const topic = req.body?.metadata?.topic || req.headers['x-ebay-topic'] as string || 'ebay/notification';
+      const eventId = (req.headers['x-ebay-notification-id'] as string) || req.body?.metadata?.topic || `ebay_${Date.now()}`;
+      const topic = req.body?.metadata?.topic || (req.headers['x-ebay-topic'] as string) || 'ebay/notification';
 
       const connection = await ChannelConnection.findById(connectionId);
       if (!connection || connection.channelType !== ChannelType.EBAY) {
@@ -135,9 +174,8 @@ export class WebhooksController {
         channelType: ChannelType.EBAY,
         topic,
         eventId,
-        status: 'PROCESSED',
+        status: 'PROCESSING',
         payload: req.body,
-        processedAt: new Date(),
       });
 
       // Dispatch notification for eBay events
@@ -169,6 +207,13 @@ export class WebhooksController {
         logger.warn(`Could not dispatch eBay notification: ${notifErr.message}`);
       }
 
+      // Ingest and synchronize eBay product in real time
+      await WebhooksController.processEbayNotification(connection, req.body);
+
+      eventDoc.status = 'PROCESSED';
+      eventDoc.processedAt = new Date();
+      await eventDoc.save();
+
       return res.status(200).json({ status: 'processed', eventId });
     } catch (err: any) {
       logger.error('eBay webhook processing error:', err);
@@ -176,10 +221,6 @@ export class WebhooksController {
     }
   }
 
-  /**
-   * POST /api/v1/webhooks/custom/:connectionId
-   * Handles custom webstore webhook notifications with HMAC-SHA256
-   */
   static async handleCustom(req: any, res: Response) {
     try {
       const { connectionId } = req.params;
@@ -472,4 +513,62 @@ export class WebhooksController {
       logger.error('Failed to process Shopify product webhook:', err);
     }
   }
+
+  private static async processEbayNotification(connection: any, payload: any) {
+    try {
+      const topic = payload?.metadata?.topic || '';
+      const data = payload?.notification?.data || payload;
+
+      logger.info(`Processing eBay notification: topic=${topic} for connection=${connection.name}`);
+
+      const sku = (data.sku || data.SKU || data.customLabel || '').trim();
+      const listingId = data.listingId || data.itemId || data.offerId || '';
+
+      if (sku) {
+        try {
+          const { host, token } = await EbayService.getValidCredentials(connection);
+          const fetchedItem = await EbayService.getInventoryItem(host, token, sku);
+          if (fetchedItem) {
+            await EbayService.ingestEbayProduct({
+              organizationId: connection.organizationId,
+              connection,
+              ebayItem: {
+                ...fetchedItem,
+                sku,
+                listingId: listingId || fetchedItem.listingId,
+              },
+            });
+            logger.info(`Successfully ingested eBay item SKU ${sku} via webhook`);
+          }
+        } catch (fetchErr: any) {
+          await EbayService.ingestEbayProduct({
+            organizationId: connection.organizationId,
+            connection,
+            ebayItem: {
+              sku,
+              listingId,
+              title: data.title || sku,
+              price: data.price || 0,
+              quantity: data.quantity || 0,
+            },
+          });
+          logger.info(`Ingested eBay item SKU ${sku} directly from webhook payload`);
+        }
+      } else {
+        const upperTopic = topic.toUpperCase();
+        if (
+          upperTopic.includes('ITEM') ||
+          upperTopic.includes('LISTING') ||
+          upperTopic.includes('INVENTORY') ||
+          upperTopic.includes('OFFER')
+        ) {
+          logger.info(`Triggering store catalog sync for connection ${connection.name} from webhook`);
+          await EbayService.syncAllEbayProducts(connection, connection.organizationId);
+        }
+      }
+    } catch (err: any) {
+      logger.error(`Error processing eBay notification for ${connection.name}: ${err.message}`);
+    }
+  }
 }
+

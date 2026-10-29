@@ -33,6 +33,7 @@ import teamRoutes from './modules/teams/teams.routes';
 import auditRoutes from './modules/audit/audit.routes';
 import settingRoutes from './modules/settings/settings.routes';
 import webhookRoutes from './modules/webhooks/webhooks.routes';
+import { SyncSchedulerService } from './services/sync-scheduler.service';
 
 const app = express();
 
@@ -119,6 +120,7 @@ if (process.env.NODE_ENV !== 'test') {
 // Graceful shutdown
 process.on('SIGTERM', () => {
   logger.info('SIGTERM signal received: closing HTTP server');
+  SyncSchedulerService.stop();
   if (server) {
     server.close(() => {
       logger.info('HTTP server closed');
