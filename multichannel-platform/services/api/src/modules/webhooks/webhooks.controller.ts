@@ -175,7 +175,7 @@ export class WebhooksController {
         channelType: ChannelType.EBAY,
         topic,
         eventId,
-        status: 'PROCESSING',
+        status: 'RECEIVED',
         payload: req.body,
       });
 

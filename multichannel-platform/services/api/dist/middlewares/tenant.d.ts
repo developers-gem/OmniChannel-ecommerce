@@ -1,3 +1,0 @@
-import { Request, Response, NextFunction } from 'express';
-export declare function enforceTenantIsolation(req: Request, res: Response, next: NextFunction): Response<any, Record<string, any>> | undefined;
-//# sourceMappingURL=tenant.d.ts.map

@@ -36,6 +36,9 @@ export const config = {
     clientId: process.env.EBAY_CLIENT_ID || '',
     clientSecret: process.env.EBAY_CLIENT_SECRET || '',
     ruName: process.env.EBAY_RUNAME || '',
+    prodClientId: process.env.EBAY_PROD_CLIENT_ID || '',
+    prodClientSecret: process.env.EBAY_PROD_CLIENT_SECRET || '',
+    prodRuName: process.env.EBAY_PROD_RUNAME || '',
     environment: (process.env.EBAY_ENVIRONMENT || 'SANDBOX').toUpperCase(),
     scopes: [
       'https://api.ebay.com/oauth/api_scope',

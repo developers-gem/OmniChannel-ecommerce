@@ -20,6 +20,7 @@ import {
 } from '@multichannel/shared';
 import { EbayService } from '../services/api/src/services/ebay.service';
 import { EbayIngestionService } from '../services/api/src/services/ebay-ingestion.service';
+import { encryptSecret } from '../services/api/src/utils/crypto';
 import axios from 'axios';
 
 describe('Bidirectional Product Sync & Mapping for eBay Integration', () => {
@@ -32,8 +33,7 @@ describe('Bidirectional Product Sync & Mapping for eBay Integration', () => {
 
   beforeAll(async () => {
     if (mongoose.connection.readyState === 0) {
-      const mongoUri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/multichannel_test_ebay_sync';
-      await mongoose.connect(mongoUri);
+      await mongoose.connect('mongodb://127.0.0.1:27017/multichannel_test_ebay_sync');
     }
 
     // Register user & organization
@@ -48,7 +48,7 @@ describe('Bidirectional Product Sync & Mapping for eBay Integration', () => {
       });
 
     authToken = res.body.data.tokens.accessToken;
-    organizationId = res.body.data.user.organizationId;
+    organizationId = res.body.data.organization?.id || res.body.data.organization?._id || res.body.data.user?.organizationId;
 
     // Create an active eBay channel connection
     ebayConnection = await ChannelConnection.create({
@@ -61,9 +61,11 @@ describe('Bidirectional Product Sync & Mapping for eBay Integration', () => {
         marketplaceId: 'EBAY_US',
       },
       credentials: {
-        accessToken: 'dummy_encrypted_access_token',
+        accessToken: encryptSecret('mock-ebay-access-token-123'),
       },
     });
+
+    await ProductMapping.init();
   });
 
   afterAll(async () => {
@@ -344,10 +346,13 @@ describe('Bidirectional Product Sync & Mapping for eBay Integration', () => {
         syncStatus: SyncStatus.SYNCED,
       });
 
+      const ghostProductId = new mongoose.Types.ObjectId();
+      const ghostVariantId = new mongoose.Types.ObjectId();
+
       const mapping = await ProductMapping.create({
         organizationId,
-        canonicalProductId: testProductId,
-        canonicalVariantId: testVariantId,
+        canonicalProductId: ghostProductId,
+        canonicalVariantId: ghostVariantId,
         channelConnectionId: ebayConnection._id,
         channelProductId: chProd._id,
         channelType: ChannelType.EBAY,

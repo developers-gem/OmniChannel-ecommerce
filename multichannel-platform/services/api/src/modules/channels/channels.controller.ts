@@ -634,23 +634,13 @@ export class ChannelsController {
         tokenType: tokens.tokenType || 'User Access Token',
       };
 
-      const existing =
-        (decodedState.name
-          ? await ChannelConnection.findOne({
-              organizationId: decodedState.organizationId,
-              channelType: ChannelType.EBAY,
-              name: decodedState.name,
-            })
-          : null) ||
-        (await ChannelConnection.findOne({
-          organizationId: decodedState.organizationId,
-          channelType: ChannelType.EBAY,
-          'config.environment': decodedState.environment || 'SANDBOX',
-        })) ||
-        (await ChannelConnection.findOne({
-          organizationId: decodedState.organizationId,
-          channelType: ChannelType.EBAY,
-        }));
+      const existing = decodedState.name
+        ? await ChannelConnection.findOne({
+            organizationId: decodedState.organizationId,
+            channelType: ChannelType.EBAY,
+            name: decodedState.name,
+          })
+        : null;
 
       if (existing) {
         existing.name = decodedState.name || existing.name;
@@ -713,23 +703,13 @@ export class ChannelsController {
       };
 
       const trimmedName = name?.trim();
-      const existing =
-        (trimmedName
-          ? await ChannelConnection.findOne({
-              organizationId: req.tenantId,
-              channelType: ChannelType.EBAY,
-              name: trimmedName,
-            })
-          : null) ||
-        (await ChannelConnection.findOne({
-          organizationId: req.tenantId,
-          channelType: ChannelType.EBAY,
-          'config.environment': environment.toUpperCase(),
-        })) ||
-        (await ChannelConnection.findOne({
-          organizationId: req.tenantId,
-          channelType: ChannelType.EBAY,
-        }));
+      const existing = trimmedName
+        ? await ChannelConnection.findOne({
+            organizationId: req.tenantId,
+            channelType: ChannelType.EBAY,
+            name: trimmedName,
+          })
+        : null;
 
       let connection;
       if (existing) {

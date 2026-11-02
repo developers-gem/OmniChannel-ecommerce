@@ -48,16 +48,35 @@ export async function runInTransaction<T>(
     return await callback(null);
   }
 
-  const session = await mongoose.startSession();
-  try {
-    session.startTransaction();
-    const result = await callback(session);
-    await session.commitTransaction();
-    return result;
-  } catch (error) {
-    await session.abortTransaction();
-    throw error;
-  } finally {
-    session.endSession();
+  const maxRetries = 3;
+  let attempt = 0;
+
+  while (true) {
+    attempt++;
+    const session = await mongoose.startSession();
+    try {
+      session.startTransaction();
+      const result = await callback(session);
+      await session.commitTransaction();
+      return result;
+    } catch (error: any) {
+      await session.abortTransaction();
+      const isTransient =
+        error?.errorLabels?.includes('TransientTransactionError') ||
+        error?.errorLabels?.includes('UnknownTransactionCommitResult') ||
+        error?.code === 112 ||
+        error?.codeName === 'WriteConflict' ||
+        error?.message?.includes('catalog changes') ||
+        error?.message?.includes('WriteConflict');
+
+      if (isTransient && attempt < maxRetries) {
+        logger.warn(`[runInTransaction] Retrying transient transaction error (attempt ${attempt}/${maxRetries}): ${error.message}`);
+        await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
+        continue;
+      }
+      throw error;
+    } finally {
+      session.endSession();
+    }
   }
 }

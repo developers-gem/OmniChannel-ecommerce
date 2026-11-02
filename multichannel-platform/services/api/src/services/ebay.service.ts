@@ -64,11 +64,25 @@ export class EbayService {
   /**
    * Retrieve app client credentials from config or connection overrides
    */
-  static getAppCredentials(overrides?: { clientId?: string; clientSecret?: string; ruName?: string }) {
+  static getAppCredentials(overrides?: { clientId?: string; clientSecret?: string; ruName?: string; hostOrEnv?: string }) {
+    const isProd = overrides?.hostOrEnv
+      ? (!overrides.hostOrEnv.toLowerCase().includes('sandbox') && !overrides.hostOrEnv.toLowerCase().includes('sbx'))
+      : false;
+
+    const defaultClientId = isProd
+      ? ((config.ebay as any).prodClientId || config.ebay.clientId)
+      : config.ebay.clientId;
+    const defaultClientSecret = isProd
+      ? ((config.ebay as any).prodClientSecret || config.ebay.clientSecret)
+      : config.ebay.clientSecret;
+    const defaultRuName = isProd
+      ? ((config.ebay as any).prodRuName || config.ebay.ruName)
+      : config.ebay.ruName;
+
     return {
-      clientId: (overrides?.clientId || config.ebay.clientId || '').trim(),
-      clientSecret: (overrides?.clientSecret || config.ebay.clientSecret || '').trim(),
-      ruName: (overrides?.ruName || config.ebay.ruName || '').trim(),
+      clientId: (overrides?.clientId || defaultClientId || '').trim(),
+      clientSecret: (overrides?.clientSecret || defaultClientSecret || '').trim(),
+      ruName: (overrides?.ruName || defaultRuName || '').trim(),
     };
   }
 
@@ -81,7 +95,7 @@ export class EbayService {
     clientId?: string;
     ruName?: string;
   }): string {
-    const creds = this.getAppCredentials({ clientId: params.clientId, ruName: params.ruName });
+    const creds = this.getAppCredentials({ clientId: params.clientId, ruName: params.ruName, hostOrEnv: params.hostOrEnv });
     const oauthHost = this.getOAuthHost(params.hostOrEnv);
     const scopes = encodeURIComponent(config.ebay.scopes);
     const state = encodeURIComponent(params.state);
@@ -139,7 +153,7 @@ export class EbayService {
     refreshTokenExpiresIn?: number;
     tokenType?: string;
   }> {
-    const creds = this.getAppCredentials(overrides);
+    const creds = this.getAppCredentials({ ...overrides, hostOrEnv });
     const apiHost = this.getApiHost(hostOrEnv);
     const basicAuth = Buffer.from(`${creds.clientId}:${creds.clientSecret}`).toString('base64');
 
@@ -192,7 +206,7 @@ export class EbayService {
     expiresIn: number;
     tokenType?: string;
   }> {
-    const creds = this.getAppCredentials(overrides);
+    const creds = this.getAppCredentials({ ...overrides, hostOrEnv });
     const apiHost = this.getApiHost(hostOrEnv);
     const basicAuth = Buffer.from(`${creds.clientId}:${creds.clientSecret}`).toString('base64');
 
@@ -1185,7 +1199,10 @@ export class EbayService {
 
       let resolvedCategoryId = productData.categoryId;
       if (!resolvedCategoryId) {
-        resolvedCategoryId = await this.suggestLeafCategory(client, productData.category || cleanTitle, marketplaceId);
+        const suggested = await this.suggestLeafCategory(client, productData.category || cleanTitle, marketplaceId);
+        if (suggested) {
+          resolvedCategoryId = suggested;
+        }
       }
       if (!resolvedCategoryId) {
         resolvedCategoryId = this.resolveCategoryId(productData.category || cleanTitle);
