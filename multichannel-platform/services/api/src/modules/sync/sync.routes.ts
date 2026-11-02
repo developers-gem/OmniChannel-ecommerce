@@ -13,5 +13,6 @@ router.post('/trigger', SyncController.triggerSync);
 router.post('/import-to-canonical', SyncController.importToCanonical);
 router.post('/reconcile-ebay', SyncController.reconcileEbay);
 router.post('/jobs/:id/retry', SyncController.retryJob);
+router.delete('/jobs', SyncController.clearJobs);
 
 export default router;

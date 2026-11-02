@@ -36,12 +36,21 @@ export class SyncController {
       const limit = parseInt(req.query.limit as string) || 20;
 
       const total = await SyncJob.countDocuments({ organizationId: req.tenantId });
-      const jobs = await SyncJob.find({ organizationId: req.tenantId })
+      const rawJobs = await SyncJob.find({ organizationId: req.tenantId })
         .populate('channelConnectionId', 'name channelType')
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
         .lean();
+
+      const jobs = rawJobs.map((job: any) => ({
+        ...job,
+        targetChannelName:
+          job.channelConnectionId?.name ||
+          (job.details?.channelName
+            ? `${job.details.channelName} (Disconnected)`
+            : 'All Connected Stores'),
+      }));
 
       return res.json({
         success: true,
@@ -94,7 +103,10 @@ export class SyncController {
         channelConnectionId: connection?._id,
         jobType,
         status: SyncJobStatus.PROCESSING,
-        details: details || {},
+        details: {
+          ...(details || {}),
+          channelName: connection?.name || 'All Connected Stores',
+        },
         attemptCount: 1,
       });
 
@@ -132,8 +144,9 @@ export class SyncController {
                     logger.warn(`Could not register webhooks during sync: ${e.message}`)
                   );
 
-                  conn.lastSyncAt = new Date();
-                  await conn.save();
+                  await ChannelConnection.findByIdAndUpdate(conn._id, {
+                    $set: { lastSyncAt: new Date() },
+                  }).catch(() => {});
                   logger.info(`Successfully imported ${syncedCount} Shopify products from ${domain}`);
 
                   if (syncedCount > 0) {
@@ -340,8 +353,9 @@ export class SyncController {
           await syncJob.save();
 
           if (connection) {
-            connection.lastSyncAt = new Date();
-            await connection.save();
+            await ChannelConnection.findByIdAndUpdate(connection._id, {
+              $set: { lastSyncAt: new Date() },
+            }).catch(() => {});
           }
         } catch (e: any) {
           logger.error('Background sync job error:', e);
@@ -753,6 +767,34 @@ export class SyncController {
       return res.status(500).json({
         success: false,
         error: { message: error.message || 'Failed to import products to canonical catalog' },
+      });
+    }
+  }
+
+
+  // DELETE /api/v1/sync/jobs - Clear completed or failed sync jobs
+  static async clearJobs(req: Request, res: Response) {
+    try {
+      const { status } = req.query;
+      const filter: any = { organizationId: req.tenantId };
+      if (status) {
+        filter.status = (status as string).toUpperCase();
+      } else {
+        filter.status = { $in: [SyncJobStatus.COMPLETED, SyncJobStatus.FAILED] };
+      }
+
+      const result = await SyncJob.deleteMany(filter);
+      return res.json({
+        success: true,
+        data: {
+          deletedCount: result.deletedCount,
+          message: `Cleared ${result.deletedCount} sync jobs from history.`,
+        },
+      });
+    } catch (error: any) {
+      return res.status(500).json({
+        success: false,
+        error: { message: error.message || 'Failed to clear sync jobs' },
       });
     }
   }

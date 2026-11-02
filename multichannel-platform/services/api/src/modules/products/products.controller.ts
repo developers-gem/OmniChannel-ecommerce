@@ -50,6 +50,48 @@ export class ProductsController {
         ];
       }
 
+      const channelParam = (
+        (req.query.channelType as string) ||
+        (req.query.channel as string) ||
+        ''
+      )
+        .toUpperCase()
+        .trim();
+
+      if (channelParam && channelParam !== 'ALL') {
+        if (
+          channelParam === 'ZERO_MAPPED' ||
+          channelParam === 'UNMAPPED' ||
+          channelParam === '0_MAPPED'
+        ) {
+          const mappedProductIds = await ProductMapping.distinct('canonicalProductId', {
+            organizationId: req.tenantId,
+            status: MappingStatus.MAPPED,
+          });
+          query._id = { $nin: mappedProductIds };
+        } else {
+          let resolvedChannelType = channelParam;
+          if (
+            channelParam === 'CUSTOM' ||
+            channelParam === 'CUSTOM_WEBSITE' ||
+            channelParam === 'CUSTOM_STORE'
+          ) {
+            resolvedChannelType = ChannelType.CUSTOM_STORE;
+          } else if (channelParam === 'SHOPIFY') {
+            resolvedChannelType = ChannelType.SHOPIFY;
+          } else if (channelParam === 'EBAY') {
+            resolvedChannelType = ChannelType.EBAY;
+          }
+
+          const mappedProductIds = await ProductMapping.distinct('canonicalProductId', {
+            organizationId: req.tenantId,
+            channelType: resolvedChannelType,
+            status: MappingStatus.MAPPED,
+          });
+          query._id = { $in: mappedProductIds };
+        }
+      }
+
       const total = await CanonicalProduct.countDocuments(query);
       const products = await CanonicalProduct.find(query)
         .sort({ createdAt: -1 })
@@ -76,16 +118,22 @@ export class ProductsController {
         const prodVariants = variants.filter(
           (v) => v.canonicalProductId.toString() === prod._id.toString()
         );
-        const mappedCount = mappings.filter(
-          (m) =>
-            m.canonicalProductId.toString() === prod._id.toString() &&
-            m.status === MappingStatus.MAPPED
+        const prodMappings = mappings.filter(
+          (m) => m.canonicalProductId.toString() === prod._id.toString()
+        );
+        const mappedCount = prodMappings.filter(
+          (m) => m.status === MappingStatus.MAPPED
         ).length;
-        const unmappedCount = mappings.filter(
-          (m) =>
-            m.canonicalProductId.toString() === prod._id.toString() &&
-            m.status === MappingStatus.UNMAPPED
+        const unmappedCount = prodMappings.filter(
+          (m) => m.status === MappingStatus.UNMAPPED
         ).length;
+        const mappedChannels = Array.from(
+          new Set(
+            prodMappings
+              .filter((m) => m.status === MappingStatus.MAPPED)
+              .map((m) => m.channelType)
+          )
+        );
 
         const totalStock = prodVariants.reduce((sum, v) => {
           const inv = inventoryItems.find(
@@ -100,6 +148,7 @@ export class ProductsController {
           mappedCount,
           unmappedCount,
           totalStock,
+          mappedChannels,
         };
       });
 
@@ -679,6 +728,7 @@ export class ProductsController {
 
       const shopifyChannels = activeChannels.filter((c) => c.channelType === ChannelType.SHOPIFY);
       const ebayChannels = activeChannels.filter((c) => c.channelType === ChannelType.EBAY);
+      const customChannels = activeChannels.filter((c) => c.channelType === ChannelType.CUSTOM_STORE);
 
       const buildChannelStats = (channels: typeof activeChannels, defaultName: string, channelTypeStr: string) => {
         if (channels.length === 0) {
@@ -729,6 +779,7 @@ export class ProductsController {
 
       const shopifyStats = buildChannelStats(shopifyChannels, 'Shopify', 'SHOPIFY');
       const ebayStats = buildChannelStats(ebayChannels, 'eBay', 'EBAY');
+      const customStats = buildChannelStats(customChannels, 'Custom Store', 'CUSTOM_STORE');
 
       return res.json({
         success: true,
@@ -743,6 +794,7 @@ export class ProductsController {
           channelBreakdown,
           shopify: shopifyStats,
           ebay: ebayStats,
+          custom: customStats,
           activeChannelsCount: activeChannels.length,
         },
       });

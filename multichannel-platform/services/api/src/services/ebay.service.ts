@@ -332,7 +332,7 @@ export class EbayService {
   /**
    * Determine marketplace, currency, and locale from connection or name
    */
-  static resolveMarketplace(connectionOrName?: any): { marketplaceId: string; currency: string; locale: string } {
+  static resolveMarketplace(connectionOrName?: any): { marketplaceId: string; currency: string; locale: string; siteId: string } {
     let name = '';
     let domain = '';
     if (typeof connectionOrName === 'string') {
@@ -343,9 +343,9 @@ export class EbayService {
     }
     const combined = `${name} ${domain}`.toLowerCase();
     if (combined.includes('uk') || combined.includes('gb') || combined.includes('ebay_gb')) {
-      return { marketplaceId: 'EBAY_GB', currency: 'GBP', locale: 'en-GB' };
+      return { marketplaceId: 'EBAY_GB', currency: 'GBP', locale: 'en-GB', siteId: '3' };
     }
-    return { marketplaceId: 'EBAY_US', currency: 'USD', locale: 'en-US' };
+    return { marketplaceId: 'EBAY_US', currency: 'USD', locale: 'en-US', siteId: '0' };
   }
 
   /**
@@ -474,14 +474,19 @@ export class EbayService {
     if (data?.errors && Array.isArray(data.errors) && data.errors.length > 0) {
       return data.errors
         .map((e: any) => {
+          const rawMsg = (e.longMessage || e.message || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+          if (String(e.errorId) === '25002' || rawMsg.toLowerCase().includes('exceed') || rawMsg.toLowerCase().includes('selling limits')) {
+            return '[eBay Error 25002] Monthly Selling Limit Reached: This listing would exceed your current eBay account allowance. Please request a selling limit increase in eBay Seller Hub or reduce the product stock quantity.';
+          }
           const params = Array.isArray(e.parameters) && e.parameters.length > 0
             ? ` (${e.parameters.map((p: any) => `${p.name}=${p.value}`).join(', ')})`
             : '';
-          return `[eBay Error ${e.errorId || 'N/A'}] ${e.longMessage || e.message}${params}`;
+          return `[eBay Error ${e.errorId || 'N/A'}] ${rawMsg}${params}`;
         })
         .join(' | ');
     }
-    return data?.message || data?.error_description || err.message;
+    const fallback = data?.message || data?.error_description || err.message || 'Unknown eBay error';
+    return String(fallback).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   }
 
   /**
@@ -933,6 +938,27 @@ export class EbayService {
       logger.info(`Successfully published offer ${offerId} for SKU ${sku} on eBay! Listing ID: ${listingId}`);
       return { offerId, listingId, status: 'PUBLISHED' };
     } catch (pubErr: any) {
+      if (quantity > 1) {
+        const errStr = JSON.stringify(pubErr.response?.data || {});
+        if (errStr.includes('25002') || errStr.toLowerCase().includes('exceed')) {
+          try {
+            logger.info(`[eBay Selling Limit] Attempting auto-fallback with quantity: 1 for SKU ${sku}`);
+            await client.put(`/sell/inventory/v1/offer/${offerId}`, {
+              ...offerPayload,
+              availableQuantity: 1,
+            });
+            const retryPubRes = await client.post(`/sell/inventory/v1/offer/${offerId}/publish`);
+            const retryListingId = retryPubRes.data?.listingId || existingListingId;
+            if (retryListingId) {
+              logger.info(`Successfully published offer ${offerId} for SKU ${sku} on eBay with adjusted quantity: 1! Listing ID: ${retryListingId}`);
+              return { offerId, listingId: retryListingId, status: 'PUBLISHED' };
+            }
+          } catch (retryErr: any) {
+            logger.warn(`Fallback publish with quantity: 1 still exceeded eBay limit: ${retryErr.message}`);
+          }
+        }
+      }
+
       const errMsg = this.formatEbayError(pubErr);
       logger.error(`[eBay Publish Rejection] Publish offer ${offerId} for SKU ${sku} failed: ${errMsg}`, {
         offerId,
@@ -1049,6 +1075,202 @@ export class EbayService {
   /**
    * Fetch inventory items with live offer pricing, listingId, and status from eBay
    */
+
+  /**
+   * Fetch all active listings on the user's eBay account using Trading API GetMyeBaySelling.
+   * This retrieves listings created directly on eBay Seller Hub / website as well as API listings.
+   */
+  static async fetchActiveListingsFromTradingApi(
+    host: string,
+    token: string,
+    connectionOrMarketplace?: any
+  ): Promise<any[]> {
+    const isSandbox = host.includes('sandbox');
+    const endpoint = isSandbox
+      ? 'https://api.sandbox.ebay.com/ws/api.dll'
+      : 'https://api.ebay.com/ws/api.dll';
+
+    const { siteId, currency } = this.resolveMarketplace(connectionOrMarketplace);
+
+    const xmlRequest = `<?xml version="1.0" encoding="utf-8"?>
+<GetMyeBaySellingRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+  <ActiveList>
+    <Include>true</Include>
+    <Pagination>
+      <EntriesPerPage>100</EntriesPerPage>
+      <PageNumber>1</PageNumber>
+    </Pagination>
+  </ActiveList>
+  <DetailLevel>ReturnAll</DetailLevel>
+</GetMyeBaySellingRequest>`;
+
+    try {
+      const response = await axios.post(endpoint, xmlRequest, {
+        headers: {
+          'X-EBAY-API-CALL-NAME': 'GetMyeBaySelling',
+          'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
+          'X-EBAY-API-SITEID': String(siteId || '3'),
+          'X-EBAY-API-IAF-TOKEN': token.trim(),
+          'Content-Type': 'text/xml; charset=utf-8',
+        },
+        timeout: 25000,
+      });
+
+      const xml = response.data;
+      if (!xml || typeof xml !== 'string') return [];
+
+      const items: any[] = [];
+      const itemRegex = /<Item>([\s\S]*?)<\/Item>/gi;
+      let match;
+
+      while ((match = itemRegex.exec(xml)) !== null) {
+        const itemXml = match[1];
+
+        const getItemTag = (tag: string) => {
+          const m = itemXml.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'));
+          return m ? m[1].trim() : '';
+        };
+
+        const listingId = getItemTag('ItemID');
+        if (!listingId) continue;
+
+        const title = getItemTag('Title') || `eBay Item ${listingId}`;
+        let sku = getItemTag('SKU');
+        if (!sku) {
+          sku = `EBAY-${listingId}`;
+        }
+
+        // Price
+        let price = 0;
+        let itemCurrency = currency;
+        const currentPriceMatch = itemXml.match(/<CurrentPrice[^>]*currencyID="([^"]+)"[^>]*>([\s\S]*?)<\/CurrentPrice>/i) ||
+                                  itemXml.match(/<CurrentPrice[^>]*>([\s\S]*?)<\/CurrentPrice>/i);
+        if (currentPriceMatch) {
+          if (currentPriceMatch.length >= 3) {
+            itemCurrency = currentPriceMatch[1] || currency;
+            price = parseFloat(currentPriceMatch[2]) || 0;
+          } else {
+            price = parseFloat(currentPriceMatch[1]) || 0;
+          }
+        }
+        if (price === 0) {
+          const buyItNowMatch = itemXml.match(/<BuyItNowPrice[^>]*>([\s\S]*?)<\/BuyItNowPrice>/i);
+          if (buyItNowMatch) price = parseFloat(buyItNowMatch[1]) || 0;
+        }
+
+        // Quantity
+        let quantity = 0;
+        const qtyAvail = getItemTag('QuantityAvailable');
+        if (qtyAvail) {
+          quantity = parseInt(qtyAvail, 10) || 0;
+        } else {
+          const totalQty = parseInt(getItemTag('Quantity'), 10) || 0;
+          const soldQty = parseInt(getItemTag('QuantitySold'), 10) || 0;
+          quantity = Math.max(0, totalQty - soldQty);
+        }
+
+        // Images
+        const images: string[] = [];
+        const picRegex = /<PictureURL>([\s\S]*?)<\/PictureURL>/gi;
+        let picMatch;
+        while ((picMatch = picRegex.exec(itemXml)) !== null) {
+          if (picMatch[1] && picMatch[1].startsWith('http')) {
+            images.push(picMatch[1].trim());
+          }
+        }
+
+        items.push({
+          sku,
+          title,
+          description: title,
+          price,
+          currency: itemCurrency,
+          listingId,
+          offerId: '',
+          offerStatus: 'PUBLISHED',
+          isPublished: true,
+          quantity,
+          images,
+          aspects: {},
+          raw: {
+            itemId: listingId,
+            sku,
+            title,
+            price,
+            quantity,
+            images,
+            source: 'TRADING_API_ACTIVE_LIST',
+          },
+        });
+      }
+
+      logger.info(`[eBay Trading API] Retrieved ${items.length} active listings from seller account`);
+      return items;
+    } catch (tradingErr: any) {
+      logger.warn(`[eBay Trading API] Could not fetch active listings via GetMyeBaySelling: ${tradingErr.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Fallback: update price and quantity on eBay using Trading API ReviseInventoryStatus.
+   * Works for both traditional listings and Inventory API listings.
+   */
+  static async reviseTradingListing(
+    host: string,
+    token: string,
+    params: {
+      listingId?: string;
+      sku?: string;
+      quantity?: number;
+      price?: number;
+      siteId?: string;
+    }
+  ): Promise<boolean> {
+    const isSandbox = host.includes('sandbox');
+    const endpoint = isSandbox
+      ? 'https://api.sandbox.ebay.com/ws/api.dll'
+      : 'https://api.ebay.com/ws/api.dll';
+
+    const { listingId, sku, quantity, price, siteId = '3' } = params;
+    if (!listingId && !sku) return false;
+
+    let itemXml = '<InventoryStatus>';
+    if (listingId) itemXml += `<ItemID>${listingId}</ItemID>`;
+    if (sku) itemXml += `<SKU>${sku}</SKU>`;
+    if (typeof quantity === 'number') itemXml += `<Quantity>${Math.max(0, quantity)}</Quantity>`;
+    if (typeof price === 'number' && price > 0) itemXml += `<StartPrice>${price.toFixed(2)}</StartPrice>`;
+    itemXml += '</InventoryStatus>';
+
+    const xmlRequest = `<?xml version="1.0" encoding="utf-8"?>
+<ReviseInventoryStatusRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+  ${itemXml}
+</ReviseInventoryStatusRequest>`;
+
+    try {
+      const response = await axios.post(endpoint, xmlRequest, {
+        headers: {
+          'X-EBAY-API-CALL-NAME': 'ReviseInventoryStatus',
+          'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
+          'X-EBAY-API-SITEID': siteId,
+          'X-EBAY-API-IAF-TOKEN': token.trim(),
+          'Content-Type': 'text/xml; charset=utf-8',
+        },
+        timeout: 20000,
+      });
+
+      const xml = response.data;
+      if (typeof xml === 'string' && (xml.includes('<Ack>Success</Ack>') || xml.includes('<Ack>Warning</Ack>'))) {
+        logger.info(`[eBay Trading API] Successfully revised inventory status for SKU ${sku || 'N/A'} (ItemID: ${listingId || 'N/A'})`);
+        return true;
+      }
+      return false;
+    } catch (err: any) {
+      logger.warn(`[eBay Trading API] ReviseInventoryStatus failed for SKU ${sku || 'N/A'}: ${err.message}`);
+      return false;
+    }
+  }
+
   static async getInventoryItems(
     host: string,
     token: string,
@@ -1154,6 +1376,42 @@ export class EbayService {
             // 404 is expected for items without offer
           }
         }
+      }
+
+      // 4. Query Trading API GetMyeBaySelling to discover active listings created directly on eBay Seller Hub
+      try {
+        const tradingListings = await this.fetchActiveListingsFromTradingApi(host, token, connectionOrMarketplace);
+        for (const tItem of tradingListings) {
+          const tSku = (tItem.sku || '').trim().toUpperCase();
+          const tListingId = (tItem.listingId || '').trim();
+
+          let matchedKey: string | undefined;
+          if (tSku && itemsMap.has(tSku)) {
+            matchedKey = tSku;
+          } else {
+            for (const [k, existing] of itemsMap.entries()) {
+              if (existing.listingId && existing.listingId === tListingId) {
+                matchedKey = k;
+                break;
+              }
+            }
+          }
+
+          if (matchedKey) {
+            const existing = itemsMap.get(matchedKey)!;
+            existing.listingId = tListingId || existing.listingId;
+            existing.isPublished = true;
+            existing.offerStatus = 'PUBLISHED';
+            if (tItem.price > 0 && existing.price === 0) existing.price = tItem.price;
+            if (tItem.quantity > 0 && existing.quantity === 0) existing.quantity = tItem.quantity;
+            if (existing.images.length === 0 && tItem.images.length > 0) existing.images = tItem.images;
+          } else {
+            const mapKey = tSku || `ITEM-${tListingId}`;
+            itemsMap.set(mapKey, tItem);
+          }
+        }
+      } catch (tradErr: any) {
+        logger.warn(`Could not enrich active eBay listings from Trading API: ${tradErr.message}`);
       }
 
       return Array.from(itemsMap.values());
@@ -1263,6 +1521,25 @@ export class EbayService {
       });
 
       if (offerResult.status !== 'PUBLISHED' || !offerResult.listingId) {
+        const { siteId } = this.resolveMarketplace(marketplace);
+        const existingListingId = offerResult.listingId;
+        if (existingListingId || sku) {
+          const revised = await this.reviseTradingListing(host, token, {
+            listingId: existingListingId,
+            sku,
+            quantity: productData.quantity,
+            price: productData.price,
+            siteId,
+          });
+          if (revised) {
+            return {
+              success: true,
+              listingId: existingListingId,
+              offerId: offerResult.offerId,
+            };
+          }
+        }
+
         const failureReason =
           offerResult.error ||
           `Offer ${offerResult.offerId || 'unknown'} could not be published to eBay (no confirmed ItemID returned)`;

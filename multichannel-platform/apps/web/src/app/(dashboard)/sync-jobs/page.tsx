@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import {
+  Trash2,
   RefreshCw,
   Play,
   RotateCcw,
@@ -31,6 +32,16 @@ export default function SyncJobsPage() {
   const triggerMutation = useMutation({
     mutationFn: async (jobType: SyncJobType) => {
       const res: any = await api.post('/sync/trigger', { jobType });
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['sync-jobs-list'] });
+    },
+  });
+
+  const clearMutation = useMutation({
+    mutationFn: async () => {
+      const res: any = await api.delete('/sync/jobs');
       return res.data;
     },
     onSuccess: () => {
@@ -72,6 +83,15 @@ export default function SyncJobsPage() {
             <option value={SyncJobType.RECONCILIATION}>Reconciliation</option>
           </select>
 
+          <button
+            onClick={() => clearMutation.mutate()}
+            disabled={clearMutation.isPending || !jobs || jobs.length === 0}
+            className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-white text-xs font-semibold px-3 py-2 rounded-xl transition disabled:opacity-40"
+            title="Clear completed and failed sync jobs from history"
+          >
+            <Trash2 className="w-3.5 h-3.5 text-slate-400" />
+            <span>{clearMutation.isPending ? 'Clearing...' : 'Clear History'}</span>
+          </button>
           <button
             onClick={() => triggerMutation.mutate(selectedJobType)}
             disabled={triggerMutation.isPending}
@@ -138,7 +158,7 @@ export default function SyncJobsPage() {
                     </td>
                     <td className="py-3.5 px-4 font-bold text-white font-mono">{job.jobType}</td>
                     <td className="py-3.5 px-4 text-slate-300">
-                      {job.channelConnectionId?.name || 'All Connected Stores'}
+                      {job.targetChannelName || job.channelConnectionId?.name || (job.details?.channelName ? `${job.details.channelName} (Disconnected)` : 'All Connected Stores')}
                     </td>
                     <td className="py-3.5 px-4 text-center">
                       <span
@@ -158,7 +178,16 @@ export default function SyncJobsPage() {
                     <td className="py-3.5 px-4 text-center font-mono">{job.attemptCount}</td>
                     <td className="py-3.5 px-4 text-slate-300">
                       {job.errorMessage ? (
-                        <span className="text-red-400">{job.errorMessage}</span>
+                        job.errorMessage.includes('ChannelConnection') && job.errorMessage.includes('No document found') ? (
+                          <div className="space-y-0.5">
+                            <span className="text-red-400 font-semibold block">Channel disconnected / removed</span>
+                            <span className="text-[11px] text-slate-500 block font-mono">
+                              Target channel integration was deleted from database
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-red-400">{job.errorMessage}</span>
+                        )
                       ) : (
                         job.details?.message || 'Queued in BullMQ worker'
                       )}

@@ -42,6 +42,38 @@ export default function ProductsPage() {
   const [isImporting, setIsImporting] = useState(false);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
+  // Channel filter state: 'ALL' | 'SHOPIFY' | 'EBAY' | 'CUSTOM_STORE' | 'ZERO_MAPPED'
+  const [channelFilter, setChannelFilter] = useState<string>('ALL');
+
+  React.useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const ch = params.get('channel') || params.get('channelType');
+      if (ch) {
+        const upper = ch.toUpperCase();
+        if (upper.includes('SHOPIFY')) setChannelFilter('SHOPIFY');
+        else if (upper.includes('EBAY')) setChannelFilter('EBAY');
+        else if (upper.includes('CUSTOM')) setChannelFilter('CUSTOM_STORE');
+        else if (upper.includes('ZERO') || upper.includes('UNMAPPED')) setChannelFilter('ZERO_MAPPED');
+      }
+    }
+  }, []);
+
+  const handleSelectChannelFilter = (type: string) => {
+    setChannelFilter(type);
+    setPage(1);
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      if (type === 'ALL') {
+        url.searchParams.delete('channel');
+        url.searchParams.delete('channelType');
+      } else {
+        url.searchParams.set('channel', type.toLowerCase());
+      }
+      window.history.replaceState({}, '', url.toString());
+    }
+  };
+
   // 0-Mapped Products Modal state
   const [isZeroMappedModalOpen, setIsZeroMappedModalOpen] = useState(false);
   const [zeroMappedInitialFilter, setZeroMappedInitialFilter] = useState<
@@ -96,11 +128,12 @@ export default function ProductsPage() {
 
   // Fetch Canonical Products
   const { data: productResponse, isLoading } = useQuery({
-    queryKey: ['canonical-products', search, page, pageSize, statusFilter],
+    queryKey: ['canonical-products', search, page, pageSize, statusFilter, channelFilter],
     queryFn: async () => {
       let url = `/products?page=${page}&limit=${pageSize}`;
       if (search) url += `&search=${encodeURIComponent(search)}`;
       if (statusFilter) url += `&status=${statusFilter}`;
+      if (channelFilter && channelFilter !== 'ALL') url += `&channelType=${channelFilter}`;
       const res: any = await api.get(url);
       return res;
     },
@@ -187,11 +220,15 @@ export default function ProductsPage() {
     onError: (err: any) => {
       setPublishingId(null);
       setPushingChannelId(null);
+      const raw = err?.response?.data?.error?.message || err.message || 'Failed to publish product to sales channel';
+      const clean = raw.includes('25002') || raw.toLowerCase().includes('exceed')
+        ? 'eBay Monthly Selling Limit Reached (Error 25002): Your eBay seller account has reached its monthly listing allowance. Request a limit increase in eBay Seller Hub or lower the stock quantity.'
+        : raw.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
       setNotification({
         type: 'error',
-        text: err.message || 'Failed to publish product to sales channel',
+        text: clean,
       });
-      setTimeout(() => setNotification(null), 8000);
+      setTimeout(() => setNotification(null), 12000);
     },
   });
 
@@ -438,11 +475,26 @@ export default function ProductsPage() {
       {/* Catalog & Multi-Store Channel Distribution Overview Bar */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
         {/* Total Master Products Card */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-lg flex items-center justify-between">
+        <div
+          onClick={() => handleSelectChannelFilter('ALL')}
+          className={`border rounded-2xl p-4 shadow-lg flex items-center justify-between cursor-pointer transition select-none ${
+            channelFilter === 'ALL'
+              ? 'bg-slate-800/90 border-brand-500 ring-2 ring-brand-500/30'
+              : 'bg-slate-900 border-slate-800 hover:border-slate-700 hover:bg-slate-850'
+          }`}
+          title="Click to view all master products"
+        >
           <div>
-            <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider block">
-              Total Master Products
-            </span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider block">
+                Total Master Products
+              </span>
+              {channelFilter === 'ALL' && (
+                <span className="text-[9px] bg-brand-900/90 text-brand-300 border border-brand-700/80 px-1.5 py-0.2 rounded font-semibold">
+                  Active
+                </span>
+              )}
+            </div>
             <div className="text-xl font-extrabold text-white mt-0.5">
               {summary?.totalMasterProducts ?? pagination?.total ?? 0}
             </div>
@@ -456,13 +508,26 @@ export default function ProductsPage() {
         </div>
 
         {/* Shopify Storefront Products */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-lg flex items-center justify-between">
+        <div
+          onClick={() => handleSelectChannelFilter('SHOPIFY')}
+          className={`border rounded-2xl p-4 shadow-lg flex items-center justify-between cursor-pointer transition select-none ${
+            channelFilter === 'SHOPIFY'
+              ? 'bg-emerald-950/40 border-emerald-500 ring-2 ring-emerald-500/30'
+              : 'bg-slate-900 border-slate-800 hover:border-emerald-800/80 hover:bg-slate-850'
+          }`}
+          title="Click to see all Shopify products"
+        >
           <div>
             <div className="flex items-center gap-1.5">
               <span className="text-[10px] text-emerald-400 uppercase font-bold tracking-wider">
                 Shopify Products
               </span>
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+              {channelFilter === 'SHOPIFY' && (
+                <span className="text-[9px] bg-emerald-900 text-emerald-300 border border-emerald-700 px-1.5 py-0.2 rounded font-semibold">
+                  Filtered
+                </span>
+              )}
             </div>
             <div className="text-xl font-extrabold text-emerald-400 mt-0.5">
               {summary?.shopify?.storeProductsCount ?? summary?.shopify?.productsCount ?? 0}{' '}
@@ -470,7 +535,8 @@ export default function ProductsPage() {
             </div>
             <div className="text-[11px] text-slate-400 mt-0.5">
               <strong className="text-slate-200">
-                {summary?.shopify?.mappedCount ?? 0} / {summary?.shopify?.listingsCount ?? 0}
+                {summary?.shopify?.mappedCanonicalCount ?? summary?.shopify?.mappedCount ?? 0} /{' '}
+                {summary?.shopify?.listingsCount ?? 0}
               </strong>{' '}
               Listings Mapped ({summary?.shopify?.mappedPercentage ?? 0}%)
             </div>
@@ -481,13 +547,26 @@ export default function ProductsPage() {
         </div>
 
         {/* eBay Storefront Products */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-lg flex items-center justify-between">
+        <div
+          onClick={() => handleSelectChannelFilter('EBAY')}
+          className={`border rounded-2xl p-4 shadow-lg flex items-center justify-between cursor-pointer transition select-none ${
+            channelFilter === 'EBAY'
+              ? 'bg-amber-950/40 border-amber-500 ring-2 ring-amber-500/30'
+              : 'bg-slate-900 border-slate-800 hover:border-amber-800/80 hover:bg-slate-850'
+          }`}
+          title="Click to see all eBay products"
+        >
           <div>
             <div className="flex items-center gap-1.5">
               <span className="text-[10px] text-amber-400 uppercase font-bold tracking-wider">
                 eBay Products
               </span>
               <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+              {channelFilter === 'EBAY' && (
+                <span className="text-[9px] bg-amber-900 text-amber-300 border border-amber-700 px-1.5 py-0.2 rounded font-semibold">
+                  Filtered
+                </span>
+              )}
             </div>
             <div className="text-xl font-extrabold text-amber-400 mt-0.5">
               {summary?.ebay?.storeProductsCount ?? summary?.ebay?.productsCount ?? 0}{' '}
@@ -495,7 +574,8 @@ export default function ProductsPage() {
             </div>
             <div className="text-[11px] text-slate-400 mt-0.5">
               <strong className="text-slate-200">
-                {summary?.ebay?.mappedCount ?? 0} / {summary?.ebay?.listingsCount ?? 0}
+                {summary?.ebay?.mappedCanonicalCount ?? summary?.ebay?.mappedCount ?? 0} /{' '}
+                {summary?.ebay?.listingsCount ?? 0}
               </strong>{' '}
               Listings Mapped ({summary?.ebay?.mappedPercentage ?? 0}%)
             </div>
@@ -507,29 +587,33 @@ export default function ProductsPage() {
 
         {/* 0-Mapped & Channel Gap Card */}
         <div
-          onClick={() => {
-            if (zeroMappedCount > 0) {
-              setZeroMappedInitialFilter('zero_only');
-            } else if (incompleteMappedCount > 0) {
-              setZeroMappedInitialFilter('all');
-            } else {
-              setZeroMappedInitialFilter('zero_only');
-            }
-            setIsZeroMappedModalOpen(true);
-          }}
+          onClick={() => handleSelectChannelFilter('ZERO_MAPPED')}
           className={`border rounded-2xl p-4 shadow-lg flex items-center justify-between cursor-pointer transition select-none ${
-            zeroMappedCount > 0
+            channelFilter === 'ZERO_MAPPED'
+              ? 'bg-red-950/50 border-red-500 ring-2 ring-red-500/30'
+              : zeroMappedCount > 0
               ? 'bg-red-950/30 border-red-800/80 hover:bg-red-950/50'
               : incompleteMappedCount > 0
               ? 'bg-amber-950/20 border-amber-800/60 hover:bg-amber-950/40'
               : 'bg-slate-900 border-slate-800 hover:border-slate-700'
           }`}
-          title="Click to view and map all 0-mapped and incomplete channel products"
+          title="Click to view all 0-mapped products"
         >
           <div>
-            <span className="text-[10px] uppercase font-bold tracking-wider block text-slate-400">
-              {zeroMappedCount > 0 ? '0-Mapped Products' : incompleteMappedCount > 0 ? 'Channel Coverage Gap' : 'Catalog Status'}
-            </span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] uppercase font-bold tracking-wider block text-slate-400">
+                {zeroMappedCount > 0
+                  ? '0-Mapped Products'
+                  : incompleteMappedCount > 0
+                  ? 'Channel Coverage Gap'
+                  : 'Catalog Status'}
+              </span>
+              {channelFilter === 'ZERO_MAPPED' && (
+                <span className="text-[9px] bg-red-900 text-red-300 border border-red-700 px-1.5 py-0.2 rounded font-semibold">
+                  Filtered
+                </span>
+              )}
+            </div>
             <div className="text-xl font-extrabold mt-0.5 flex items-center gap-2">
               {zeroMappedCount > 0 ? (
                 <span className="text-red-400">{zeroMappedCount} 0-Mapped</span>
@@ -559,7 +643,9 @@ export default function ProductsPage() {
           </div>
           <div
             className={`w-10 h-10 rounded-xl border flex items-center justify-center ${
-              zeroMappedCount > 0
+              channelFilter === 'ZERO_MAPPED'
+                ? 'bg-red-900 border-red-500 text-white'
+                : zeroMappedCount > 0
                 ? 'bg-red-950/60 border-red-800 text-red-400'
                 : incompleteMappedCount > 0
                 ? 'bg-amber-950/60 border-amber-800 text-amber-400'
@@ -576,6 +662,173 @@ export default function ProductsPage() {
           </div>
         </div>
       </div>
+
+      {/* Dedicated Channel Filter Buttons Row */}
+      <div className="bg-slate-900/80 border border-slate-800/90 rounded-2xl p-3 flex flex-wrap items-center justify-between gap-2.5 shadow-lg">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* All Master Products Button */}
+          <button
+            type="button"
+            onClick={() => handleSelectChannelFilter('ALL')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+              channelFilter === 'ALL'
+                ? 'bg-brand-600 text-white border-brand-500 shadow-md shadow-brand-600/30'
+                : 'bg-slate-850 hover:bg-slate-800 text-slate-300 hover:text-white border-slate-750'
+            }`}
+          >
+            <Package className="w-3.5 h-3.5" />
+            <span>All Products</span>
+            <span
+              className={`px-2 py-0.5 rounded-full text-[10px] ${
+                channelFilter === 'ALL'
+                  ? 'bg-brand-700 text-white'
+                  : 'bg-slate-800 text-slate-400 border border-slate-700'
+              }`}
+            >
+              {summary?.totalMasterProducts ?? pagination?.total ?? 0}
+            </span>
+          </button>
+
+          {/* See Shopify All Products Button */}
+          <button
+            type="button"
+            onClick={() => handleSelectChannelFilter('SHOPIFY')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+              channelFilter === 'SHOPIFY'
+                ? 'bg-emerald-600 text-white border-emerald-500 shadow-md shadow-emerald-600/30 ring-2 ring-emerald-500/20'
+                : 'bg-slate-850 hover:bg-emerald-950/40 text-emerald-400 border-slate-750 hover:border-emerald-800/80'
+            }`}
+          >
+            <ShoppingBag className="w-3.5 h-3.5" />
+            <span>See Shopify All Products</span>
+            <span
+              className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                channelFilter === 'SHOPIFY'
+                  ? 'bg-emerald-800 text-white'
+                  : 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+              }`}
+            >
+              {summary?.shopify?.mappedCanonicalCount ?? summary?.shopify?.mappedCount ?? 0}
+            </span>
+          </button>
+
+          {/* See eBay All Products Button */}
+          <button
+            type="button"
+            onClick={() => handleSelectChannelFilter('EBAY')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+              channelFilter === 'EBAY'
+                ? 'bg-amber-600 text-white border-amber-500 shadow-md shadow-amber-600/30 ring-2 ring-amber-500/20'
+                : 'bg-slate-850 hover:bg-amber-950/40 text-amber-400 border-slate-750 hover:border-amber-800/80'
+            }`}
+          >
+            <Tag className="w-3.5 h-3.5" />
+            <span>See eBay All Products</span>
+            <span
+              className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                channelFilter === 'EBAY'
+                  ? 'bg-amber-800 text-white'
+                  : 'bg-amber-950 text-amber-300 border border-amber-800'
+              }`}
+            >
+              {summary?.ebay?.mappedCanonicalCount ?? summary?.ebay?.mappedCount ?? 0}
+            </span>
+          </button>
+
+          {/* See Custom Website All Products Button */}
+          <button
+            type="button"
+            onClick={() => handleSelectChannelFilter('CUSTOM_STORE')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+              channelFilter === 'CUSTOM_STORE'
+                ? 'bg-purple-600 text-white border-purple-500 shadow-md shadow-purple-600/30 ring-2 ring-purple-500/20'
+                : 'bg-slate-850 hover:bg-purple-950/40 text-purple-400 border-slate-750 hover:border-purple-800/80'
+            }`}
+          >
+            <Globe className="w-3.5 h-3.5" />
+            <span>See Custom Website All Products</span>
+            <span
+              className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                channelFilter === 'CUSTOM_STORE'
+                  ? 'bg-purple-800 text-white'
+                  : 'bg-purple-950 text-purple-300 border border-purple-800'
+              }`}
+            >
+              {summary?.custom?.mappedCanonicalCount ?? summary?.custom?.mappedCount ?? 0}
+            </span>
+          </button>
+
+          {/* See 0-Mapped Button */}
+          <button
+            type="button"
+            onClick={() => handleSelectChannelFilter('ZERO_MAPPED')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+              channelFilter === 'ZERO_MAPPED'
+                ? 'bg-red-600 text-white border-red-500 shadow-md shadow-red-600/30 ring-2 ring-red-500/20'
+                : 'bg-slate-850 hover:bg-red-950/40 text-red-400 border-slate-750 hover:border-red-800/80'
+            }`}
+          >
+            <Unlink className="w-3.5 h-3.5" />
+            <span>See 0-Mapped Products</span>
+            <span
+              className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                channelFilter === 'ZERO_MAPPED'
+                  ? 'bg-red-800 text-white'
+                  : 'bg-red-950 text-red-300 border border-red-800'
+              }`}
+            >
+              {zeroMappedCount}
+            </span>
+          </button>
+        </div>
+
+        {/* Clear Active Filter Pill */}
+        {channelFilter !== 'ALL' && (
+          <button
+            type="button"
+            onClick={() => handleSelectChannelFilter('ALL')}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-750 text-slate-300 hover:text-white border border-slate-700 transition cursor-pointer"
+          >
+            <span>&times; Reset Filter (Show All)</span>
+          </button>
+        )}
+      </div>
+
+      {/* Filter Status Badge (When a channel filter is active) */}
+      {channelFilter !== 'ALL' && (
+        <div className="flex items-center justify-between bg-slate-900/60 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-slate-300">
+          <div className="flex items-center gap-2">
+            <span className="text-slate-400 font-medium">Filtered by:</span>
+            {channelFilter === 'SHOPIFY' && (
+              <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg bg-emerald-950/80 border border-emerald-800 text-emerald-300 font-bold">
+                🛍️ Shopify All Products ({pagination?.total ?? 0})
+              </span>
+            )}
+            {channelFilter === 'EBAY' && (
+              <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg bg-amber-950/80 border border-amber-800 text-amber-300 font-bold">
+                🏷️ eBay All Products ({pagination?.total ?? 0})
+              </span>
+            )}
+            {channelFilter === 'CUSTOM_STORE' && (
+              <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg bg-purple-950/80 border border-purple-800 text-purple-300 font-bold">
+                🌐 Custom Website All Products ({pagination?.total ?? 0})
+              </span>
+            )}
+            {channelFilter === 'ZERO_MAPPED' && (
+              <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg bg-red-950/80 border border-red-800 text-red-300 font-bold">
+                🔗 0-Mapped Products ({pagination?.total ?? 0})
+              </span>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => handleSelectChannelFilter('ALL')}
+            className="text-xs text-brand-400 hover:text-brand-300 font-semibold cursor-pointer underline"
+          >
+            Show All Master Products
+          </button>
+        </div>
+      )}
 
       {/* Notification Banner */}
       {notification && (
@@ -763,7 +1016,50 @@ export default function ProductsPage() {
                 <tr>
                   <td colSpan={8} className="py-12 text-center text-slate-500">
                     <Package className="w-8 h-8 mx-auto text-slate-700 mb-2" />
-                    <span>No canonical products found. Click "Import from Channels" above or create one!</span>
+                    {channelFilter === 'SHOPIFY' ? (
+                      <div>
+                        <span className="block text-slate-300 font-semibold mb-1">No products mapped to Shopify found.</span>
+                        <span className="text-xs text-slate-500">Click &quot;Channels&quot; on any product in the catalog to push/publish it to Shopify, or reset the filter.</span>
+                        <div className="mt-3">
+                          <button
+                            type="button"
+                            onClick={() => handleSelectChannelFilter('ALL')}
+                            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-750 text-slate-300 hover:text-white text-xs font-semibold cursor-pointer border border-slate-700"
+                          >
+                            Show All Products
+                          </button>
+                        </div>
+                      </div>
+                    ) : channelFilter === 'EBAY' ? (
+                      <div>
+                        <span className="block text-slate-300 font-semibold mb-1">No products mapped to eBay found.</span>
+                        <span className="text-xs text-slate-500">Click &quot;Channels&quot; on any product in the catalog to push/publish it to eBay, or reset the filter.</span>
+                        <div className="mt-3">
+                          <button
+                            type="button"
+                            onClick={() => handleSelectChannelFilter('ALL')}
+                            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-750 text-slate-300 hover:text-white text-xs font-semibold cursor-pointer border border-slate-700"
+                          >
+                            Show All Products
+                          </button>
+                        </div>
+                      </div>
+                    ) : channelFilter === 'CUSTOM_STORE' ? (
+                      <div>
+                        <span className="block text-slate-300 font-semibold mb-1">No products mapped to Custom Website found.</span>
+                        <div className="mt-3">
+                          <button
+                            type="button"
+                            onClick={() => handleSelectChannelFilter('ALL')}
+                            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-750 text-slate-300 hover:text-white text-xs font-semibold cursor-pointer border border-slate-700"
+                          >
+                            Show All Products
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <span>No canonical products found. Click &quot;Import from Channels&quot; above or create one!</span>
+                    )}
                   </td>
                 </tr>
               )}

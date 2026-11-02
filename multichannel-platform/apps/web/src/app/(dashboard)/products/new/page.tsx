@@ -400,13 +400,15 @@ export default function AddProductPage() {
           };
         } catch (pubErr: any) {
           console.error(`Error publishing to channel ${ch.name}:`, pubErr);
+          const rawErr = pubErr?.response?.data?.error?.message || pubErr?.message || 'Failed to push to this channel';
+          const cleanErr = rawErr.includes('25002') || rawErr.toLowerCase().includes('exceed')
+            ? 'eBay Monthly Selling Limit Reached (Error 25002): Your eBay seller account has reached its monthly listing allowance. Request a limit increase in eBay Seller Hub or reduce the product stock quantity.'
+            : rawErr.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+
           updatedResults[i] = {
             ...updatedResults[i],
             status: 'failed',
-            message:
-              pubErr?.response?.data?.error?.message ||
-              pubErr?.message ||
-              'Failed to push to this channel',
+            message: cleanErr,
           };
         }
 
@@ -1290,7 +1292,7 @@ export default function AddProductPage() {
                       )}
                     </div>
                     {res.message && (
-                      <div className="text-[11px] text-slate-400 pl-6 truncate">
+                      <div className="text-[11px] text-slate-400 pl-6 break-words leading-relaxed">
                         {res.message}
                       </div>
                     )}
