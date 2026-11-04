@@ -26,6 +26,14 @@ import {
   Trash2,
   AlertTriangle,
   HelpCircle,
+  TrendingUp,
+  TrendingDown,
+  ArrowUpRight,
+  ArrowDownRight,
+  Sparkles,
+  SlidersHorizontal,
+  ShieldCheck,
+  Eye,
 } from 'lucide-react';
 import { useCurrency } from '@/lib/currency';
 
@@ -35,6 +43,34 @@ function formatFileSize(bytes: number): string {
   const sizes = ['Bytes', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+export interface ProductDiffItem {
+  id: string;
+  rowIndex: number;
+  sku: string;
+  title: string;
+  existingTitle?: string;
+  changeType: 'NEW_PRODUCT' | 'PRICE_CHANGED' | 'STOCK_CHANGED' | 'BOTH_CHANGED' | 'UNCHANGED';
+  oldPrice: number | null;
+  newPrice: number;
+  priceDiff: number;
+  oldStock: number | null;
+  newStock: number;
+  stockDiff: number;
+  brand?: string;
+  category?: string;
+  isNew: boolean;
+}
+
+export interface DiffSummary {
+  totalRows: number;
+  newCount: number;
+  priceChangedCount: number;
+  stockChangedCount: number;
+  bothChangedCount: number;
+  unchangedCount: number;
+  totalChangedCount: number;
 }
 
 interface ParsedProductItem {
@@ -81,6 +117,12 @@ export default function CsvImportPage() {
   const [showAdvancedMapping, setShowAdvancedMapping] = useState(false);
   const [importResult, setImportResult] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Pure Native Differential Comparison Engine states
+  const [diffSummary, setDiffSummary] = useState<DiffSummary | null>(null);
+  const [diffsList, setDiffsList] = useState<ProductDiffItem[]>([]);
+  const [diffFilter, setDiffFilter] = useState<'ALL' | 'CHANGES_ONLY' | 'PRICE_CHANGED' | 'STOCK_CHANGED' | 'BOTH_CHANGED' | 'NEW_PRODUCT' | 'UNCHANGED'>('ALL');
+  const [activeViewMode, setActiveViewMode] = useState<'DIFF' | 'RAW'>('DIFF');
 
   // "File Already Uploaded" confirmation modal state
   const [showAlreadyUploadedModal, setShowAlreadyUploadedModal] = useState(false);
@@ -165,6 +207,19 @@ export default function CsvImportPage() {
     return duplicates;
   }, [productsList]);
 
+  // Differential comparison filtered list
+  const filteredDiffs = useMemo(() => {
+    if (!diffsList || diffsList.length === 0) return [];
+    if (diffFilter === 'ALL') return diffsList;
+    if (diffFilter === 'CHANGES_ONLY') return diffsList.filter((d) => d.changeType !== 'UNCHANGED');
+    if (diffFilter === 'PRICE_CHANGED') return diffsList.filter((d) => d.changeType === 'PRICE_CHANGED');
+    if (diffFilter === 'STOCK_CHANGED') return diffsList.filter((d) => d.changeType === 'STOCK_CHANGED');
+    if (diffFilter === 'BOTH_CHANGED') return diffsList.filter((d) => d.changeType === 'BOTH_CHANGED');
+    if (diffFilter === 'NEW_PRODUCT') return diffsList.filter((d) => d.changeType === 'NEW_PRODUCT');
+    if (diffFilter === 'UNCHANGED') return diffsList.filter((d) => d.changeType === 'UNCHANGED');
+    return diffsList;
+  }, [diffsList, diffFilter]);
+
   // Preview mutation: analyzes headers & maps products from uploaded file
   const previewMutation = useMutation({
     mutationFn: async (content: string) => {
@@ -178,6 +233,12 @@ export default function CsvImportPage() {
       }
       if (Array.isArray(data?.products)) {
         setProductsList(data.products);
+      }
+      if (data?.summary) {
+        setDiffSummary(data.summary);
+      }
+      if (Array.isArray(data?.diffs)) {
+        setDiffsList(data.diffs);
       }
       setError(null);
     },
@@ -317,6 +378,10 @@ export default function CsvImportPage() {
     setCsvContent('');
     setPreviewData(null);
     setProductsList([]);
+    setDiffSummary(null);
+    setDiffsList([]);
+    setDiffFilter('ALL');
+    setActiveViewMode('DIFF');
     setMappingConfig({});
     setImportResult(null);
     setError(null);
@@ -363,30 +428,49 @@ APP-HOOD-SAMPLE,Heavyweight Pullover Hoodie,Nordic Wear,Apparel,Fleece-lined hea
     e.preventDefault();
     if (!editingItem) return;
 
-    setProductsList((prev) =>
-      prev.map((item) =>
-        item.id === editingItem.id
-          ? {
-              ...item,
-              sku: editForm.sku.trim().toUpperCase(),
-              title: editForm.title.trim(),
-              brand: editForm.brand.trim() || 'Generic',
-              category: editForm.category.trim() || 'General',
-              description: editForm.description.trim(),
-              retailPrice: Number(editForm.retailPrice) || 0,
-              stock: Number(editForm.stock) || 0,
-              images: editForm.images.trim(),
-            }
-          : item
-      )
+    const updated = productsList.map((item) =>
+      item.id === editingItem.id
+        ? {
+            ...item,
+            sku: editForm.sku.trim().toUpperCase(),
+            title: editForm.title.trim(),
+            brand: editForm.brand.trim() || 'Generic',
+            category: editForm.category.trim() || 'General',
+            description: editForm.description.trim(),
+            retailPrice: Number(editForm.retailPrice) || 0,
+            stock: Number(editForm.stock) || 0,
+            images: editForm.images.trim(),
+          }
+        : item
     );
 
+    setProductsList(updated);
     setEditingItem(null);
+
+    // Dynamic re-inspection with updated products
+    api.post('/csv/inspect', { products: updated })
+      .then((res: any) => {
+        if (res?.data?.summary) setDiffSummary(res.data.summary);
+        if (Array.isArray(res?.data?.diffs)) setDiffsList(res.data.diffs);
+      })
+      .catch(() => {});
   };
 
   // Delete/remove a specific product row before importing
   const handleDeleteRow = (productId: string) => {
-    setProductsList((prev) => prev.filter((item) => item.id !== productId));
+    const updated = productsList.filter((item) => item.id !== productId);
+    setProductsList(updated);
+    setDiffsList((prev) => prev.filter((d) => d.id !== productId));
+    if (updated.length > 0) {
+      api.post('/csv/inspect', { products: updated })
+        .then((res: any) => {
+          if (res?.data?.summary) setDiffSummary(res.data.summary);
+          if (Array.isArray(res?.data?.diffs)) setDiffsList(res.data.diffs);
+        })
+        .catch(() => {});
+    } else {
+      setDiffSummary(null);
+    }
   };
 
   return (
@@ -465,24 +549,30 @@ APP-HOOD-SAMPLE,Heavyweight Pullover Hoodie,Nordic Wear,Apparel,Fleece-lined hea
             </Link>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 font-mono text-slate-300 bg-slate-900/80 p-3.5 rounded-xl border border-emerald-900/50">
+          <div className="grid grid-cols-2 sm:grid-cols-6 gap-2.5 font-mono text-slate-300 bg-slate-900/80 p-3.5 rounded-xl border border-emerald-900/50">
             <div>
               <span className="text-[10px] text-slate-400 uppercase block">Total Processed</span>
               <span className="text-sm font-bold text-white">{importResult.totalRows}</span>
             </div>
             <div>
-              <span className="text-[10px] text-emerald-400 uppercase block">Added / Updated</span>
-              <span className="text-sm font-bold text-emerald-400">{importResult.successfulRows}</span>
+              <span className="text-[10px] text-emerald-400 uppercase block">New Products</span>
+              <span className="text-sm font-bold text-emerald-300">{importResult.createdCount ?? 0}</span>
             </div>
             <div>
-              <span className="text-[10px] text-brand-400 uppercase block">New Products</span>
-              <span className="text-sm font-bold text-brand-300">{importResult.createdCount ?? importResult.successfulRows}</span>
+              <span className="text-[10px] text-purple-400 uppercase block">Both Changed</span>
+              <span className="text-sm font-bold text-purple-300">{importResult.bothChangedCount ?? 0}</span>
             </div>
             <div>
-              <span className="text-[10px] text-amber-400 uppercase block">Duplicates Skipped</span>
-              <span className="text-sm font-bold text-amber-300">
-                {importResult.skippedDuplicates ? importResult.skippedDuplicates.length : 0}
-              </span>
+              <span className="text-[10px] text-amber-400 uppercase block">Price Changed</span>
+              <span className="text-sm font-bold text-amber-300">{importResult.priceOnlyCount ?? 0}</span>
+            </div>
+            <div>
+              <span className="text-[10px] text-blue-400 uppercase block">Stock Changed</span>
+              <span className="text-sm font-bold text-blue-300">{importResult.stockOnlyCount ?? 0}</span>
+            </div>
+            <div>
+              <span className="text-[10px] text-slate-400 uppercase block">Unchanged</span>
+              <span className="text-sm font-bold text-slate-300">{importResult.unchangedCount ?? 0}</span>
             </div>
           </div>
 
@@ -627,19 +717,49 @@ APP-HOOD-SAMPLE,Heavyweight Pullover Hoodie,Nordic Wear,Apparel,Fleece-lined hea
           </div>
         )}
 
-        {/* Complete Products Table - Matching User's Screenshot Structure */}
+        {/* Products Table & Differential Engine Section */}
         {productsList.length > 0 && (
           <div className="space-y-4 pt-2">
+            {/* Top Toolbar: View Mode Tabs & Custom Mapping Button */}
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
               <div className="flex items-center gap-2">
-                <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wider">
-                  File Content Preview
-                </h3>
-                <span className="text-xs text-slate-500 font-normal">
-                  (Showing all {productsList.length} items from CSV)
-                </span>
+                <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setActiveViewMode('DIFF')}
+                    className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                      activeViewMode === 'DIFF'
+                        ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30 shadow-sm'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Differential Comparison</span>
+                    {diffSummary && (
+                      <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/30 text-amber-200">
+                        {diffSummary.totalChangedCount} Changes
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveViewMode('RAW')}
+                    className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                      activeViewMode === 'RAW'
+                        ? 'bg-slate-800 text-white border border-slate-700 shadow-sm'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <Layers className="w-3.5 h-3.5 text-slate-400" />
+                    <span>Raw CSV Columns</span>
+                    <span className="px-1.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-slate-800 text-slate-300">
+                      {productsList.length}
+                    </span>
+                  </button>
+                </div>
+
                 {duplicateSkuSet.size > 0 && (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
                     <AlertTriangle className="w-3 h-3" />
                     {duplicateSkuSet.size} Duplicate SKU detected
                   </span>
@@ -649,7 +769,7 @@ APP-HOOD-SAMPLE,Heavyweight Pullover Hoodie,Nordic Wear,Apparel,Fleece-lined hea
               <button
                 type="button"
                 onClick={() => setShowAdvancedMapping(!showAdvancedMapping)}
-                className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 transition cursor-pointer"
+                className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 transition cursor-pointer px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800"
               >
                 <Settings2 className="w-3.5 h-3.5 text-slate-400" />
                 <span>{showAdvancedMapping ? 'Hide Column Mapping' : 'Customize Column Mapping'}</span>
@@ -700,125 +820,423 @@ APP-HOOD-SAMPLE,Heavyweight Pullover Hoodie,Nordic Wear,Apparel,Fleece-lined hea
                     Duplicate SKU Warning: Some items have the exact same SKU ({Array.from(duplicateSkuSet).join(', ')})
                   </p>
                   <p className="text-[11px] text-amber-200/80">
-                    Click the <strong className="text-white">Edit</strong> button on duplicate items to give them unique SKUs before pushing.
+                    Click the <strong className="text-white">Edit</strong> button on duplicate items to give them unique SKUs before saving.
                     If left unchanged, only the first item with that SKU will be imported, and duplicates will be skipped.
                   </p>
                 </div>
               </div>
             )}
 
-            {/* Full Product List Table Matching User's Screenshot */}
-            <div className="border border-slate-800 rounded-xl overflow-hidden bg-slate-950 shadow-inner">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs font-mono">
-                  <thead className="bg-slate-800/80 text-slate-300 uppercase text-[10px] font-bold border-b border-slate-800 tracking-wider">
-                    <tr>
-                      <th className="py-3 px-3 w-10 text-center">#</th>
-                      <th className="py-3 px-3">SKU</th>
-                      <th className="py-3 px-3">TITLE</th>
-                      <th className="py-3 px-3">DESCRIPTION</th>
-                      <th className="py-3 px-3">BRAND</th>
-                      <th className="py-3 px-3">CATEGORY</th>
-                      <th className="py-3 px-3">IMAGES</th>
-                      <th className="py-3 px-3 text-right">PRICE</th>
-                      <th className="py-3 px-3 text-right">QUANTITY</th>
-                      <th className="py-3 px-3 text-center">ACTIONS</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-800/70 font-sans">
-                    {productsList.map((item, idx) => {
-                      const isDuplicate = duplicateSkuSet.has((item.sku || '').toUpperCase());
-                      return (
-                        <tr
-                          key={item.id || idx}
-                          className={`hover:bg-slate-900/60 transition ${
-                            isDuplicate ? 'bg-amber-950/20' : ''
-                          }`}
-                        >
-                          {/* Row Number */}
-                          <td className="py-2.5 px-3 text-center text-slate-500 font-mono text-xs">
-                            {idx + 1}
-                          </td>
+            {/* VIEW 1: Differential Comparison Engine View */}
+            {activeViewMode === 'DIFF' && (
+              <div className="space-y-3 animate-in fade-in duration-150">
+                {/* Metric Summary Cards */}
+                {diffSummary && (
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 font-mono text-xs">
+                    <div className="p-3 rounded-xl bg-purple-950/30 border border-purple-800/50">
+                      <div className="flex items-center justify-between text-purple-300 font-semibold mb-1">
+                        <span className="text-[10px] uppercase font-sans">Both Changed</span>
+                        <span className="text-xs">⚡</span>
+                      </div>
+                      <div className="text-xl font-bold text-white">{diffSummary.bothChangedCount}</div>
+                      <div className="text-[10px] text-purple-300/80 font-sans mt-0.5">Price & Stock updated</div>
+                    </div>
 
-                          {/* SKU */}
-                          <td className="py-2.5 px-3">
-                            <div className="flex items-center gap-1.5">
-                              <span className="font-mono font-semibold text-white text-xs">
-                                {item.sku || '(Missing SKU)'}
-                              </span>
-                              {isDuplicate && (
-                                <span
-                                  className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 shrink-0"
-                                  title="Duplicate SKU! Click Edit to change or only the first one will be added."
-                                >
-                                  ⚠️ Duplicate
-                                </span>
-                              )}
-                            </div>
-                          </td>
+                    <div className="p-3 rounded-xl bg-amber-950/30 border border-amber-800/50">
+                      <div className="flex items-center justify-between text-amber-300 font-semibold mb-1">
+                        <span className="text-[10px] uppercase font-sans">Price Changed</span>
+                        <span className="text-xs">💰</span>
+                      </div>
+                      <div className="text-xl font-bold text-white">{diffSummary.priceChangedCount}</div>
+                      <div className="text-[10px] text-amber-300/80 font-sans mt-0.5">Price updated only</div>
+                    </div>
 
-                          {/* Title */}
-                          <td className="py-2.5 px-3 text-slate-200 font-medium max-w-[160px] truncate" title={item.title}>
-                            {item.title || '-'}
-                          </td>
+                    <div className="p-3 rounded-xl bg-blue-950/30 border border-blue-800/50">
+                      <div className="flex items-center justify-between text-blue-300 font-semibold mb-1">
+                        <span className="text-[10px] uppercase font-sans">Stock Changed</span>
+                        <span className="text-xs">📦</span>
+                      </div>
+                      <div className="text-xl font-bold text-white">{diffSummary.stockChangedCount}</div>
+                      <div className="text-[10px] text-blue-300/80 font-sans mt-0.5">Stock updated only</div>
+                    </div>
 
-                          {/* Description */}
-                          <td className="py-2.5 px-3 text-slate-400 text-xs max-w-[200px] truncate" title={item.description}>
-                            {item.description || '-'}
-                          </td>
+                    <div className="p-3 rounded-xl bg-emerald-950/30 border border-emerald-800/50">
+                      <div className="flex items-center justify-between text-emerald-300 font-semibold mb-1">
+                        <span className="text-[10px] uppercase font-sans">New Products</span>
+                        <span className="text-xs">✨</span>
+                      </div>
+                      <div className="text-xl font-bold text-white">{diffSummary.newCount}</div>
+                      <div className="text-[10px] text-emerald-300/80 font-sans mt-0.5">New to Master Catalog</div>
+                    </div>
 
-                          {/* Brand */}
-                          <td className="py-2.5 px-3 text-slate-300 max-w-[120px] truncate">
-                            {item.brand || 'Generic'}
-                          </td>
+                    <div className="p-3 rounded-xl bg-slate-900 border border-slate-800">
+                      <div className="flex items-center justify-between text-slate-400 font-semibold mb-1">
+                        <span className="text-[10px] uppercase font-sans">Unchanged</span>
+                        <span className="text-xs">✓</span>
+                      </div>
+                      <div className="text-xl font-bold text-white">{diffSummary.unchangedCount}</div>
+                      <div className="text-[10px] text-slate-400 font-sans mt-0.5">Identical to Catalog</div>
+                    </div>
+                  </div>
+                )}
 
-                          {/* Category */}
-                          <td className="py-2.5 px-3 text-slate-300 max-w-[120px] truncate">
-                            {item.category || 'General'}
-                          </td>
+                {/* Filter Pills */}
+                <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                  {[
+                    { key: 'ALL', label: 'All Items', count: diffSummary?.totalRows ?? diffsList.length },
+                    { key: 'CHANGES_ONLY', label: 'Changes Only', count: diffSummary?.totalChangedCount ?? 0 },
+                    { key: 'BOTH_CHANGED', label: 'Both Changed', count: diffSummary?.bothChangedCount ?? 0 },
+                    { key: 'PRICE_CHANGED', label: 'Price Changed', count: diffSummary?.priceChangedCount ?? 0 },
+                    { key: 'STOCK_CHANGED', label: 'Stock Changed', count: diffSummary?.stockChangedCount ?? 0 },
+                    { key: 'NEW_PRODUCT', label: 'New Products', count: diffSummary?.newCount ?? 0 },
+                    { key: 'UNCHANGED', label: 'Unchanged', count: diffSummary?.unchangedCount ?? 0 },
+                  ].map((filterTab) => (
+                    <button
+                      key={filterTab.key}
+                      type="button"
+                      onClick={() => setDiffFilter(filterTab.key as any)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition cursor-pointer flex items-center gap-1.5 ${
+                        diffFilter === filterTab.key
+                          ? 'bg-brand-600 text-white shadow-md shadow-brand-600/30'
+                          : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
+                      }`}
+                    >
+                      <span>{filterTab.label}</span>
+                      <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-black/30">
+                        {filterTab.count}
+                      </span>
+                    </button>
+                  ))}
+                </div>
 
-                          {/* Images */}
-                          <td className="py-2.5 px-3 text-slate-400 font-mono text-[11px] max-w-[180px] truncate" title={item.images}>
-                            {item.images || '-'}
-                          </td>
-
-                          {/* Price */}
-                          <td className="py-2.5 px-3 text-right font-mono font-bold text-white text-xs">
-                            {format(item.retailPrice ?? 0)}
-                          </td>
-
-                          {/* Quantity */}
-                          <td className="py-2.5 px-3 text-right font-mono text-slate-200 text-xs">
-                            {item.stock ?? 0}
-                          </td>
-
-                          {/* Actions: Edit & Delete */}
-                          <td className="py-2.5 px-3 text-center">
-                            <div className="flex items-center justify-center gap-1.5">
-                              <button
-                                type="button"
-                                onClick={() => handleOpenEdit(item)}
-                                className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-brand-500/10 hover:bg-brand-500/20 text-brand-400 border border-brand-500/30 text-[11px] font-semibold transition cursor-pointer"
-                                title="Modify SKU, price, or details before saving"
-                              >
-                                <Edit2 className="w-3 h-3" />
-                                <span>Edit</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteRow(item.id)}
-                                className="p-1 rounded-lg bg-slate-800 hover:bg-red-950/60 text-slate-400 hover:text-red-400 border border-slate-700 hover:border-red-800 transition cursor-pointer"
-                                title="Remove this product from import list"
-                              >
-                                <Trash2 className="w-3 h-3" />
-                              </button>
-                            </div>
-                          </td>
+                {/* Differential Comparison Table */}
+                <div className="border border-slate-800 rounded-xl overflow-hidden bg-slate-950 shadow-inner">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs font-mono">
+                      <thead className="bg-slate-800/80 text-slate-300 uppercase text-[10px] font-bold border-b border-slate-800 tracking-wider">
+                        <tr>
+                          <th className="py-3 px-3 w-10 text-center">#</th>
+                          <th className="py-3 px-3">SKU</th>
+                          <th className="py-3 px-3">PRODUCT TITLE</th>
+                          <th className="py-3 px-3">STATUS / CHANGE</th>
+                          <th className="py-3 px-3 text-right">PRICE (OLD → NEW)</th>
+                          <th className="py-3 px-3 text-right">STOCK (OLD → NEW)</th>
+                          <th className="py-3 px-3 text-center">ACTIONS</th>
                         </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/70 font-sans">
+                        {filteredDiffs.length > 0 ? (
+                          filteredDiffs.map((diffItem, idx) => {
+                            const isDuplicate = duplicateSkuSet.has((diffItem.sku || '').toUpperCase());
+                            return (
+                              <tr
+                                key={diffItem.id || idx}
+                                className={`hover:bg-slate-900/60 transition ${
+                                  diffItem.changeType === 'BOTH_CHANGED'
+                                    ? 'bg-purple-950/15'
+                                    : diffItem.changeType === 'PRICE_CHANGED'
+                                    ? 'bg-amber-950/15'
+                                    : diffItem.changeType === 'STOCK_CHANGED'
+                                    ? 'bg-blue-950/15'
+                                    : diffItem.changeType === 'NEW_PRODUCT'
+                                    ? 'bg-emerald-950/15'
+                                    : ''
+                                }`}
+                              >
+                                <td className="py-2.5 px-3 text-center text-slate-500 font-mono text-xs">
+                                  {diffItem.rowIndex}
+                                </td>
+
+                                <td className="py-2.5 px-3">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="font-mono font-semibold text-white text-xs">
+                                      {diffItem.sku || '(Missing SKU)'}
+                                    </span>
+                                    {isDuplicate && (
+                                      <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 shrink-0">
+                                        ⚠️ Duplicate
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+
+                                <td className="py-2.5 px-3 text-slate-200 font-medium max-w-[220px]">
+                                  <div className="truncate" title={diffItem.title}>
+                                    {diffItem.title || '-'}
+                                  </div>
+                                  {diffItem.brand && (
+                                    <span className="text-[10px] text-slate-400 block font-normal">
+                                      {diffItem.brand} {diffItem.category ? `• ${diffItem.category}` : ''}
+                                    </span>
+                                  )}
+                                </td>
+
+                                <td className="py-2.5 px-3">
+                                  {diffItem.changeType === 'BOTH_CHANGED' && (
+                                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/40">
+                                      ⚡ Both Price & Stock
+                                    </span>
+                                  )}
+                                  {diffItem.changeType === 'PRICE_CHANGED' && (
+                                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                                      💰 Price Changed
+                                    </span>
+                                  )}
+                                  {diffItem.changeType === 'STOCK_CHANGED' && (
+                                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-blue-500/20 text-blue-300 border border-blue-500/40">
+                                      📦 Stock Changed
+                                    </span>
+                                  )}
+                                  {diffItem.changeType === 'NEW_PRODUCT' && (
+                                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                                      ✨ New Product
+                                    </span>
+                                  )}
+                                  {diffItem.changeType === 'UNCHANGED' && (
+                                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-slate-800 text-slate-400 border border-slate-700">
+                                      ✓ Unchanged
+                                    </span>
+                                  )}
+                                </td>
+
+                                <td className="py-2.5 px-3 text-right">
+                                  {diffItem.changeType === 'PRICE_CHANGED' || diffItem.changeType === 'BOTH_CHANGED' ? (
+                                    <div className="flex flex-col items-end">
+                                      <div className="flex items-center gap-1.5 font-mono">
+                                        <span className="line-through text-slate-500 text-[11px]">
+                                          {format(diffItem.oldPrice ?? 0)}
+                                        </span>
+                                        <span className="text-slate-400">→</span>
+                                        <span className="font-bold text-white text-xs">
+                                          {format(diffItem.newPrice)}
+                                        </span>
+                                      </div>
+                                      <span
+                                        className={`text-[10px] font-mono font-semibold ${
+                                          diffItem.priceDiff > 0 ? 'text-emerald-400' : 'text-rose-400'
+                                        }`}
+                                      >
+                                        {diffItem.priceDiff > 0
+                                          ? `+${format(diffItem.priceDiff)}`
+                                          : `-${format(Math.abs(diffItem.priceDiff))}`}
+                                      </span>
+                                    </div>
+                                  ) : diffItem.changeType === 'NEW_PRODUCT' ? (
+                                    <div className="flex flex-col items-end font-mono">
+                                      <span className="font-bold text-emerald-300 text-xs">
+                                        {format(diffItem.newPrice)}
+                                      </span>
+                                      <span className="text-[10px] text-emerald-400 font-sans">
+                                        (New Base)
+                                      </span>
+                                    </div>
+                                  ) : (
+                                    <span className="text-slate-400 font-mono text-xs">
+                                      {format(diffItem.newPrice)}
+                                    </span>
+                                  )}
+                                </td>
+
+                                <td className="py-2.5 px-3 text-right">
+                                  {diffItem.changeType === 'STOCK_CHANGED' || diffItem.changeType === 'BOTH_CHANGED' ? (
+                                    <div className="flex flex-col items-end">
+                                      <div className="flex items-center gap-1.5 font-mono">
+                                        <span className="line-through text-slate-500 text-[11px]">
+                                          {diffItem.oldStock ?? 0}
+                                        </span>
+                                        <span className="text-slate-400">→</span>
+                                        <span className="font-bold text-white text-xs">
+                                          {diffItem.newStock}
+                                        </span>
+                                      </div>
+                                      <span
+                                        className={`text-[10px] font-mono font-semibold ${
+                                          diffItem.stockDiff > 0 ? 'text-blue-400' : 'text-rose-400'
+                                        }`}
+                                      >
+                                        {diffItem.stockDiff > 0
+                                          ? `+${diffItem.stockDiff} units`
+                                          : `${diffItem.stockDiff} units`}
+                                      </span>
+                                    </div>
+                                  ) : diffItem.changeType === 'NEW_PRODUCT' ? (
+                                    <div className="flex flex-col items-end font-mono">
+                                      <span className="font-bold text-emerald-300 text-xs">
+                                        {diffItem.newStock}
+                                      </span>
+                                      <span className="text-[10px] text-emerald-400 font-sans">
+                                        (Initial Stock)
+                                      </span>
+                                    </div>
+                                  ) : (
+                                    <span className="text-slate-400 font-mono text-xs">
+                                      {diffItem.newStock}
+                                    </span>
+                                  )}
+                                </td>
+
+                                <td className="py-2.5 px-3 text-center">
+                                  <div className="flex items-center justify-center gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const found =
+                                          productsList.find((p) => p.sku === diffItem.sku || p.id === diffItem.id) ||
+                                          productsList[diffItem.rowIndex - 1];
+                                        if (found) handleOpenEdit(found);
+                                      }}
+                                      className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-brand-500/10 hover:bg-brand-500/20 text-brand-400 border border-brand-500/30 text-[11px] font-semibold transition cursor-pointer"
+                                      title="Modify details before saving"
+                                    >
+                                      <Edit2 className="w-3 h-3" />
+                                      <span>Edit</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteRow(diffItem.id)}
+                                      className="p-1 rounded-lg bg-slate-800 hover:bg-red-950/60 text-slate-400 hover:text-red-400 border border-slate-700 hover:border-red-800 transition cursor-pointer"
+                                      title="Remove from update batch"
+                                    >
+                                      <Trash2 className="w-3 h-3" />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })
+                        ) : (
+                          <tr>
+                            <td colSpan={7} className="py-8 text-center text-slate-500 text-xs font-sans">
+                              No products match the selected filter ({diffFilter}).
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* VIEW 2: Raw CSV Columns View */}
+            {activeViewMode === 'RAW' && (
+              <div className="border border-slate-800 rounded-xl overflow-hidden bg-slate-950 shadow-inner animate-in fade-in duration-150">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs font-mono">
+                    <thead className="bg-slate-800/80 text-slate-300 uppercase text-[10px] font-bold border-b border-slate-800 tracking-wider">
+                      <tr>
+                        <th className="py-3 px-3 w-10 text-center">#</th>
+                        <th className="py-3 px-3">SKU</th>
+                        <th className="py-3 px-3">TITLE</th>
+                        <th className="py-3 px-3">DESCRIPTION</th>
+                        <th className="py-3 px-3">BRAND</th>
+                        <th className="py-3 px-3">CATEGORY</th>
+                        <th className="py-3 px-3">IMAGES</th>
+                        <th className="py-3 px-3 text-right">PRICE</th>
+                        <th className="py-3 px-3 text-right">QUANTITY</th>
+                        <th className="py-3 px-3 text-center">ACTIONS</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/70 font-sans">
+                      {productsList.map((item, idx) => {
+                        const isDuplicate = duplicateSkuSet.has((item.sku || '').toUpperCase());
+                        return (
+                          <tr
+                            key={item.id || idx}
+                            className={`hover:bg-slate-900/60 transition ${
+                              isDuplicate ? 'bg-amber-950/20' : ''
+                            }`}
+                          >
+                            <td className="py-2.5 px-3 text-center text-slate-500 font-mono text-xs">
+                              {idx + 1}
+                            </td>
+
+                            <td className="py-2.5 px-3">
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-mono font-semibold text-white text-xs">
+                                  {item.sku || '(Missing SKU)'}
+                                </span>
+                                {isDuplicate && (
+                                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 shrink-0">
+                                    ⚠️ Duplicate
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+
+                            <td className="py-2.5 px-3 text-slate-200 font-medium max-w-[160px] truncate" title={item.title}>
+                              {item.title || '-'}
+                            </td>
+
+                            <td className="py-2.5 px-3 text-slate-400 text-xs max-w-[200px] truncate" title={item.description}>
+                              {item.description || '-'}
+                            </td>
+
+                            <td className="py-2.5 px-3 text-slate-300 max-w-[120px] truncate">
+                              {item.brand || 'Generic'}
+                            </td>
+
+                            <td className="py-2.5 px-3 text-slate-300 max-w-[120px] truncate">
+                              {item.category || 'General'}
+                            </td>
+
+                            <td className="py-2.5 px-3 text-slate-400 font-mono text-[11px] max-w-[180px] truncate" title={item.images}>
+                              {item.images || '-'}
+                            </td>
+
+                            <td className="py-2.5 px-3 text-right font-mono font-bold text-white text-xs">
+                              {format(item.retailPrice ?? 0)}
+                            </td>
+
+                            <td className="py-2.5 px-3 text-right font-mono text-slate-200 text-xs">
+                              {item.stock ?? 0}
+                            </td>
+
+                            <td className="py-2.5 px-3 text-center">
+                              <div className="flex items-center justify-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenEdit(item)}
+                                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-brand-500/10 hover:bg-brand-500/20 text-brand-400 border border-brand-500/30 text-[11px] font-semibold transition cursor-pointer"
+                                  title="Modify details before saving"
+                                >
+                                  <Edit2 className="w-3 h-3" />
+                                  <span>Edit</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteRow(item.id)}
+                                  className="p-1 rounded-lg bg-slate-800 hover:bg-red-950/60 text-slate-400 hover:text-red-400 border border-slate-700 hover:border-red-800 transition cursor-pointer"
+                                  title="Remove this product from list"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Master Catalog Safe Updation Notice */}
+            <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 flex items-start gap-3.5 text-xs text-slate-300">
+              <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 shrink-0 mt-0.5">
+                <ShieldCheck className="w-4 h-4" />
+              </div>
+              <div className="space-y-1">
+                <h4 className="font-bold text-white flex items-center gap-2">
+                  <span>Safe Master Catalog Updation Mode</span>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-normal bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                    Stores Untouched
+                  </span>
+                </h4>
+                <p className="text-slate-400 leading-relaxed text-[11px]">
+                  Clicking the button below updates your platform Master Catalog, variant pricing, and inventory tracked stock. Your external store listings (eBay, Shopify) remain <strong>completely safe and untouched</strong> until you review and push them to channels from the All Products page.
+                </p>
               </div>
             </div>
 
@@ -826,20 +1244,25 @@ APP-HOOD-SAMPLE,Heavyweight Pullover Hoodie,Nordic Wear,Apparel,Fleece-lined hea
             <div className="bg-slate-950 border border-slate-800 rounded-2xl p-5 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xl">
               <div>
                 <p className="text-xs sm:text-sm text-slate-300 font-medium">
-                  Ready to import <span className="text-emerald-400 font-bold">{productsList.length} products</span> from <span className="text-white font-mono">{fileName}</span> into your Master Catalog.
+                  Ready to apply changes for <span className="text-emerald-400 font-bold">{productsList.length} products</span> from <span className="text-white font-mono">{fileName}</span> to your Master Catalog.
                 </p>
-                {duplicateSkuSet.size > 0 ? (
-                  <p className="text-xs text-amber-400 mt-1 flex items-center gap-1.5">
-                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                    <span>
-                      Notice: {duplicateSkuSet.size} duplicate SKU detected ({Array.from(duplicateSkuSet).join(', ')}). If not updated, only the first occurrence will be added.
-                    </span>
-                  </p>
-                ) : (
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    All SKUs are ready and valid for import into your Master Catalog.
-                  </p>
-                )}
+                <div className="flex flex-wrap items-center gap-2 mt-1.5 text-xs font-mono">
+                  {diffSummary ? (
+                    <>
+                      <span className="text-purple-300 font-semibold">{diffSummary.bothChangedCount} Both Changed</span>
+                      <span className="text-slate-600">•</span>
+                      <span className="text-amber-300 font-semibold">{diffSummary.priceChangedCount} Price Changes</span>
+                      <span className="text-slate-600">•</span>
+                      <span className="text-blue-300 font-semibold">{diffSummary.stockChangedCount} Stock Changes</span>
+                      <span className="text-slate-600">•</span>
+                      <span className="text-emerald-400 font-semibold">{diffSummary.newCount} New Products</span>
+                      <span className="text-slate-600">•</span>
+                      <span className="text-slate-400">{diffSummary.unchangedCount} Unchanged</span>
+                    </>
+                  ) : (
+                    <span className="text-slate-500">All SKUs ready for Master Catalog ingestion</span>
+                  )}
+                </div>
               </div>
 
               <button
@@ -851,12 +1274,15 @@ APP-HOOD-SAMPLE,Heavyweight Pullover Hoodie,Nordic Wear,Apparel,Fleece-lined hea
                 {importMutation.isPending ? (
                   <>
                     <RefreshCw className="w-4 h-4 animate-spin" />
-                    <span>Saving All Changes to Catalog...</span>
+                    <span>Applying Differential Updates to Master Catalog...</span>
                   </>
                 ) : (
                   <>
                     <Save className="w-4 h-4" />
-                    <span>Save All Changes in One Time</span>
+                    <span>
+                      Apply Updates to Master Catalog{' '}
+                      {diffSummary?.totalChangedCount ? `(${diffSummary.totalChangedCount} Changes)` : `(${productsList.length} Items)`}
+                    </span>
                   </>
                 )}
               </button>

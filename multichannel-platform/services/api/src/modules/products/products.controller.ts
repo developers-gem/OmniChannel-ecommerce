@@ -604,55 +604,80 @@ export class ProductsController {
       let unmappedCount = 0;
       const unmappedStores: string[] = [];
 
-      // 3. For each mapping: un-map and delete/end on the external channel stores (Shopify, eBay, Custom)
+      const deleteFromStores =
+        req.body?.deleteFromStores === true ||
+        req.query?.deleteFromStores === 'true' ||
+        req.body?.deleteFromStores === 'true';
+
+      // 3. For each mapping: un-map, and optionally delete on external channels if deleteFromStores is true
       for (const m of mappings) {
         const conn: any = m.channelConnectionId;
         const chProd: any = m.channelProductId;
         if (!conn) continue;
 
-        if (conn.channelType === ChannelType.SHOPIFY && chProd?.externalProductId) {
-          try {
-            const { domain, token } = ShopifyService.getCredentials(conn);
-            const ok = await ShopifyService.deleteProduct(domain, token, chProd.externalProductId);
-            if (ok) {
-              unmappedStores.push(`Shopify (${conn.name})`);
-              unmappedCount++;
+        if (deleteFromStores) {
+          if (conn.channelType === ChannelType.SHOPIFY && chProd?.externalProductId) {
+            try {
+              const { domain, token } = ShopifyService.getCredentials(conn);
+              const ok = await ShopifyService.deleteProduct(domain, token, chProd.externalProductId);
+              if (ok) {
+                unmappedStores.push(`Shopify (${conn.name})`);
+                unmappedCount++;
+              }
+            } catch (shErr: any) {
+              logger.warn(`Could not delete product ${chProd.externalProductId} from Shopify: ${shErr.message}`);
             }
-          } catch (shErr: any) {
-            logger.warn(`Could not delete product ${chProd.externalProductId} from Shopify: ${shErr.message}`);
-          }
-        } else if (conn.channelType === ChannelType.EBAY) {
-          try {
-            const sku =
-              chProd?.sku ||
-              variants.find((v) => v._id.toString() === m.canonicalVariantId?.toString())?.sku ||
-              product.masterSku;
-            const listingId =
-              chProd?.externalListingId ||
-              (chProd?.externalProductId && /^\d+$/.test(chProd.externalProductId)
-                ? chProd.externalProductId
-                : undefined);
-            const { host, token } = await EbayService.getValidCredentials(conn);
-            const ok = await EbayService.deleteInventoryItem(host, token, sku, listingId);
-            if (ok) {
-              unmappedStores.push(`eBay (${conn.name})`);
-              unmappedCount++;
+          } else if (conn.channelType === ChannelType.EBAY) {
+            try {
+              const sku =
+                chProd?.sku ||
+                variants.find((v) => v._id.toString() === m.canonicalVariantId?.toString())?.sku ||
+                product.masterSku;
+              const listingId =
+                chProd?.externalListingId ||
+                (chProd?.externalProductId && /^\d+$/.test(chProd.externalProductId)
+                  ? chProd.externalProductId
+                  : undefined);
+              const { host, token } = await EbayService.getValidCredentials(conn);
+              const ok = await EbayService.deleteInventoryItem(host, token, sku, listingId);
+              if (ok) {
+                unmappedStores.push(`eBay (${conn.name})`);
+                unmappedCount++;
+              }
+            } catch (ebErr: any) {
+              logger.warn(`Could not delete eBay item for product ${product.masterSku}: ${ebErr.message}`);
             }
-          } catch (ebErr: any) {
-            logger.warn(`Could not delete eBay item for product ${product.masterSku}: ${ebErr.message}`);
+          } else if (conn.channelType === ChannelType.CUSTOM_STORE) {
+            unmappedStores.push(`Custom Store (${conn.name})`);
+            unmappedCount++;
           }
-        } else if (conn.channelType === ChannelType.CUSTOM_STORE) {
-          unmappedStores.push(`Custom Store (${conn.name})`);
-          unmappedCount++;
-        }
 
-        if (chProd?._id) {
-          await ChannelProduct.findByIdAndUpdate(chProd._id, {
-            $set: {
-              status: ChannelProductStatus.ENDED,
-              syncStatus: SyncStatus.OUT_OF_SYNC,
-            },
-          });
+          if (chProd?._id) {
+            await ChannelProduct.findByIdAndUpdate(chProd._id, {
+              $set: {
+                status: ChannelProductStatus.ENDED,
+                syncStatus: SyncStatus.OUT_OF_SYNC,
+              },
+            });
+          }
+        } else {
+          // Unmap only: keep store listing alive on eBay / Shopify, only detach mapping
+          if (conn.channelType === ChannelType.SHOPIFY) {
+            unmappedStores.push(`Shopify (${conn.name})`);
+          } else if (conn.channelType === ChannelType.EBAY) {
+            unmappedStores.push(`eBay (${conn.name})`);
+          } else {
+            unmappedStores.push(`${conn.name}`);
+          }
+          unmappedCount++;
+
+          if (chProd?._id) {
+            await ChannelProduct.findByIdAndUpdate(chProd._id, {
+              $set: {
+                syncStatus: SyncStatus.OUT_OF_SYNC,
+              },
+            });
+          }
         }
       }
 
@@ -696,7 +721,9 @@ export class ProductsController {
       // 9. Send notification
       const storeDetails =
         unmappedStores.length > 0
-          ? `unmapped & removed from ${Array.from(new Set(unmappedStores)).join(', ')}`
+          ? deleteFromStores
+            ? `unmapped & removed from ${Array.from(new Set(unmappedStores)).join(', ')}`
+            : `unmapped from ${Array.from(new Set(unmappedStores)).join(', ')} (store listings kept active)`
           : 'unmapped from all channels';
 
       await NotificationService.create({

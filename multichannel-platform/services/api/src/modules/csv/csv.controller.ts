@@ -85,8 +85,185 @@ function getRowValue(
   return '';
 }
 
+export interface ProductDiffItem {
+  id: string;
+  rowIndex: number;
+  sku: string;
+  title: string;
+  existingTitle?: string;
+  changeType: 'NEW_PRODUCT' | 'PRICE_CHANGED' | 'STOCK_CHANGED' | 'BOTH_CHANGED' | 'UNCHANGED';
+  oldPrice: number | null;
+  newPrice: number;
+  priceDiff: number;
+  oldStock: number | null;
+  newStock: number;
+  stockDiff: number;
+  brand?: string;
+  category?: string;
+  isNew: boolean;
+}
+
+export interface DiffSummary {
+  totalRows: number;
+  newCount: number;
+  priceChangedCount: number;
+  stockChangedCount: number;
+  bothChangedCount: number;
+  unchangedCount: number;
+  totalChangedCount: number;
+}
+
+// Pure Native TypeScript Differential Comparison Engine:
+// Compares CSV rows with current Master Catalog by SKU without any external libraries
+async function computeDifferentialComparison(
+  items: any[],
+  organizationId: any
+): Promise<{ summary: DiffSummary; diffs: ProductDiffItem[] }> {
+  const skus = Array.from(
+    new Set(
+      items
+        .map((it) => (it.sku || '').toUpperCase().trim())
+        .filter((s) => s.length > 0)
+    )
+  );
+
+  const existingVariants = await ProductVariant.find({
+    organizationId,
+    sku: { $in: skus },
+  }).lean();
+
+  const variantIds = existingVariants.map((v) => v._id);
+  const canonicalIds = Array.from(
+    new Set(existingVariants.map((v) => v.canonicalProductId).filter(Boolean))
+  );
+
+  const [existingInventory, existingCanonicals] = await Promise.all([
+    InventoryItem.find({
+      organizationId,
+      canonicalVariantId: { $in: variantIds },
+    }).lean(),
+    CanonicalProduct.find({
+      organizationId,
+      _id: { $in: canonicalIds },
+    }).lean(),
+  ]);
+
+  const variantMap = new Map<string, any>();
+  for (const v of existingVariants) {
+    variantMap.set(v.sku.toUpperCase(), v);
+  }
+
+  const inventoryMap = new Map<string, any>();
+  for (const inv of existingInventory) {
+    if (inv.canonicalVariantId) {
+      inventoryMap.set(inv.canonicalVariantId.toString(), inv);
+    }
+  }
+
+  const canonicalMap = new Map<string, any>();
+  for (const cp of existingCanonicals) {
+    canonicalMap.set(cp._id.toString(), cp);
+  }
+
+  let newCount = 0;
+  let priceChangedCount = 0;
+  let stockChangedCount = 0;
+  let bothChangedCount = 0;
+  let unchangedCount = 0;
+
+  const diffs: ProductDiffItem[] = [];
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const rowIndex = i + 1;
+    const sku = (item.sku || '').toUpperCase().trim();
+    const title = (item.title || '').trim();
+    const newPrice = Math.max(0, parseFloat(String(item.retailPrice ?? 0).replace(/[^0-9.-]/g, '')) || 0);
+    const newStock = Math.max(0, parseInt(String(item.stock ?? 0).replace(/[^0-9-]/g, ''), 10) || 0);
+
+    const existingVariant = sku ? variantMap.get(sku) : undefined;
+
+    if (!existingVariant) {
+      newCount++;
+      diffs.push({
+        id: item.id || `row-${rowIndex}`,
+        rowIndex,
+        sku,
+        title,
+        changeType: 'NEW_PRODUCT',
+        oldPrice: null,
+        newPrice,
+        priceDiff: 0,
+        oldStock: null,
+        newStock,
+        stockDiff: 0,
+        brand: item.brand,
+        category: item.category,
+        isNew: true,
+      });
+    } else {
+      const inv = inventoryMap.get(existingVariant._id.toString());
+      const cp = canonicalMap.get(existingVariant.canonicalProductId?.toString());
+
+      const oldPrice = Number(existingVariant.retailPrice ?? (cp?.defaultRetailPrice ?? 0)) || 0;
+      const oldStock = Number(inv?.trackedStock ?? 0);
+
+      const priceDiff = Number((newPrice - oldPrice).toFixed(2));
+      const stockDiff = newStock - oldStock;
+
+      const priceChanged = Math.abs(priceDiff) > 0.001;
+      const stockChanged = stockDiff !== 0;
+
+      let changeType: 'BOTH_CHANGED' | 'PRICE_CHANGED' | 'STOCK_CHANGED' | 'UNCHANGED';
+      if (priceChanged && stockChanged) {
+        changeType = 'BOTH_CHANGED';
+        bothChangedCount++;
+      } else if (priceChanged) {
+        changeType = 'PRICE_CHANGED';
+        priceChangedCount++;
+      } else if (stockChanged) {
+        changeType = 'STOCK_CHANGED';
+        stockChangedCount++;
+      } else {
+        changeType = 'UNCHANGED';
+        unchangedCount++;
+      }
+
+      diffs.push({
+        id: item.id || `row-${rowIndex}`,
+        rowIndex,
+        sku,
+        title: title || existingVariant.title || cp?.title || '',
+        existingTitle: existingVariant.title || cp?.title,
+        changeType,
+        oldPrice,
+        newPrice,
+        priceDiff,
+        oldStock,
+        newStock,
+        stockDiff,
+        brand: item.brand || cp?.brand,
+        category: item.category || cp?.category,
+        isNew: false,
+      });
+    }
+  }
+
+  const summary: DiffSummary = {
+    totalRows: items.length,
+    newCount,
+    priceChangedCount,
+    stockChangedCount,
+    bothChangedCount,
+    unchangedCount,
+    totalChangedCount: newCount + priceChangedCount + stockChangedCount + bothChangedCount,
+  };
+
+  return { summary, diffs };
+}
+
 export class CsvController {
-  // POST /api/v1/csv/preview - Parse raw CSV text and return columns, row count, detected mappings, all products, and duplicate SKUs
+  // POST /api/v1/csv/preview - Parse raw CSV text and return columns, row count, detected mappings, differential comparison, and duplicate SKUs
   static async preview(req: Request, res: Response) {
     try {
       const { csvContent } = req.body;
@@ -155,6 +332,9 @@ export class CsvController {
         if (count > 1) duplicateSkus.push(sku);
       });
 
+      // Compute native differential comparison against current database records
+      const diffResult = await computeDifferentialComparison(products, req.tenantId);
+
       return res.json({
         success: true,
         data: {
@@ -164,12 +344,63 @@ export class CsvController {
           previewRows: records,
           products,
           duplicateSkus,
+          summary: diffResult.summary,
+          diffs: diffResult.diffs,
         },
       });
     } catch (error: any) {
       return res.status(400).json({
         success: false,
         error: { message: `CSV Parsing error: ${error.message}` },
+      });
+    }
+  }
+
+  // POST /api/v1/csv/inspect - Inspect and compare arbitrary products list against Master Catalog
+  static async inspect(req: Request, res: Response) {
+    try {
+      const { csvContent, products: suppliedProducts, mappingConfig } = req.body;
+      let items: any[] = [];
+
+      if (Array.isArray(suppliedProducts) && suppliedProducts.length > 0) {
+        items = suppliedProducts;
+      } else if (csvContent && typeof csvContent === 'string') {
+        const records = parse(csvContent, {
+          columns: true,
+          skip_empty_lines: true,
+          trim: true,
+        });
+
+        if (records && records.length > 0) {
+          const headers = Object.keys(records[0]);
+          const resolvedMapping = {
+            ...autoDetectFieldMapping(headers),
+            ...mappingConfig,
+          };
+
+          items = records.map((record: any, index: number) => ({
+            id: `row-${index + 1}`,
+            rowIndex: index + 1,
+            sku: getRowValue(record, 'sku', resolvedMapping).toUpperCase(),
+            title: getRowValue(record, 'title', resolvedMapping),
+            brand: getRowValue(record, 'brand', resolvedMapping) || 'Generic',
+            category: getRowValue(record, 'category', resolvedMapping) || 'General',
+            description: getRowValue(record, 'description', resolvedMapping),
+            retailPrice: Math.max(0, parseFloat(getRowValue(record, 'retailPrice', resolvedMapping) || '0') || 0),
+            stock: Math.max(0, parseInt(getRowValue(record, 'stock', resolvedMapping) || '0', 10) || 0),
+          }));
+        }
+      }
+
+      const diffResult = await computeDifferentialComparison(items, req.tenantId);
+      return res.json({
+        success: true,
+        data: diffResult,
+      });
+    } catch (error: any) {
+      return res.status(400).json({
+        success: false,
+        error: { message: `Inspection error: ${error.message}` },
       });
     }
   }
@@ -244,6 +475,10 @@ export class CsvController {
       let successfulRows = 0;
       let createdCount = 0;
       let updatedCount = 0;
+      let priceOnlyCount = 0;
+      let stockOnlyCount = 0;
+      let bothChangedCount = 0;
+      let unchangedCount = 0;
       let failedRows = 0;
       const rowErrors: any[] = [];
 
@@ -328,43 +563,61 @@ export class CsvController {
           if (variant) {
             // Update existing
             canonicalProd = await CanonicalProduct.findById(variant.canonicalProductId);
+
+            const oldPrice = Number(variant.retailPrice ?? (canonicalProd?.defaultRetailPrice ?? 0)) || 0;
+            const inv = await InventoryItem.findOne({
+              organizationId: req.tenantId,
+              canonicalVariantId: variant._id,
+            });
+            const oldStock = Number(inv?.trackedStock ?? 0);
+
+            const priceDiff = Number((retailPrice - oldPrice).toFixed(2));
+            const stockDiff = inv ? stock - oldStock : 0;
+            const priceChanged = Math.abs(priceDiff) > 0.001;
+            const stockChanged = stockDiff !== 0;
+
+            if (priceChanged && stockChanged) {
+              bothChangedCount++;
+            } else if (priceChanged) {
+              priceOnlyCount++;
+            } else if (stockChanged) {
+              stockOnlyCount++;
+            } else {
+              unchangedCount++;
+            }
+
             if (canonicalProd) {
               if (brand && brand !== 'Generic') canonicalProd.brand = brand;
               if (category && category !== 'General') canonicalProd.category = category;
               if (description) canonicalProd.description = description;
               if (tags.length > 0) canonicalProd.tags = tags;
               if (images.length > 0) canonicalProd.images = images;
-              canonicalProd.defaultCostPrice = costPrice || canonicalProd.defaultCostPrice;
-              canonicalProd.defaultRetailPrice = retailPrice || canonicalProd.defaultRetailPrice;
+              if (costPrice > 0) canonicalProd.defaultCostPrice = costPrice;
+              if (retailPrice > 0) canonicalProd.defaultRetailPrice = retailPrice;
               await canonicalProd.save();
             }
 
-            variant.costPrice = costPrice;
-            variant.retailPrice = retailPrice;
+            if (costPrice > 0) variant.costPrice = costPrice;
+            if (retailPrice > 0) variant.retailPrice = retailPrice;
             if (barcode) variant.barcode = barcode;
             if (title) variant.title = title;
             await variant.save();
 
             // Update inventory
-            const inv = await InventoryItem.findOne({
-              organizationId: req.tenantId,
-              canonicalVariantId: variant._id,
-            });
             if (inv) {
-              const diff = stock - inv.trackedStock;
               inv.trackedStock = stock;
               inv.availableToAllocate = Math.max(0, stock - inv.reservedStock - inv.safetyStock);
               await inv.save();
 
-              if (diff !== 0) {
+              if (stockDiff !== 0) {
                 await InventoryMovement.create({
                   organizationId: req.tenantId,
                   canonicalVariantId: variant._id,
                   changeType: InventoryChangeType.MANUAL_ADJUSTMENT,
-                  quantityChanged: diff,
-                  previousTrackedStock: stock - diff,
+                  quantityChanged: stockDiff,
+                  previousTrackedStock: oldStock,
                   newTrackedStock: stock,
-                  reason: `CSV Import update (Job: ${importJob._id})`,
+                  reason: `CSV Differential Update (Job: ${importJob._id})`,
                   performedBy: req.user?.userId,
                 });
               }
@@ -488,13 +741,13 @@ export class CsvController {
       importJob.completedAt = new Date();
       await importJob.save();
 
-      let message = `File imported successfully and ${successfulRows} product${successfulRows === 1 ? '' : 's'} added to your product list${updatedCount > 0 ? ` (${createdCount} new, ${updatedCount} updated)` : ''}!`;
+      let message = `File processed successfully! Master Catalog updated: ${successfulRows} product${successfulRows === 1 ? '' : 's'} (${createdCount} new, ${priceOnlyCount} price updates, ${stockOnlyCount} stock updates, ${bothChangedCount} price & stock updates, ${unchangedCount} unchanged). External store listings (eBay, Shopify) were kept safe and untouched.`;
 
       if (skippedDuplicates.length > 0) {
         const dupSummary = skippedDuplicates.map(
           (d) => `SKU "${d.sku}" (${d.firstTitle} & ${d.title})`
         ).join(', ');
-        message += ` Notice: There were duplicate SKU products in your file (${dupSummary}). We added only the first product ("${skippedDuplicates[0].firstTitle}"). If you want to add the second product, you can delete other products and upload again, or update its SKU, or add it manually.`;
+        message += ` Notice: Duplicate SKU products in file (${dupSummary}) were deduplicated; the first occurrence was imported.`;
       }
 
       return res.json({
@@ -505,6 +758,10 @@ export class CsvController {
           successfulRows,
           createdCount,
           updatedCount,
+          priceOnlyCount,
+          stockOnlyCount,
+          bothChangedCount,
+          unchangedCount,
           failedRows,
           skippedDuplicates,
           errors: rowErrors.slice(0, 20),

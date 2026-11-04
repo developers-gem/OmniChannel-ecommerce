@@ -9,6 +9,7 @@ router.use(requireAuth);
 router.use(enforceTenantIsolation);
 
 router.post('/preview', CsvController.preview);
+router.post('/inspect', CsvController.inspect);
 router.post('/import', CsvController.import);
 router.get('/jobs', CsvController.getJobs);
 router.get('/export', CsvController.export);

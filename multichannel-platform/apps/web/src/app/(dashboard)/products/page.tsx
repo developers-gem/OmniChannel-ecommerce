@@ -45,6 +45,7 @@ export default function ProductsPage() {
   const [isImporting, setIsImporting] = useState(false);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [productToDelete, setProductToDelete] = useState<any | null>(null);
+  const [deleteFromStores, setDeleteFromStores] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   // Channel filter state: 'ALL' | 'SHOPIFY' | 'EBAY' | 'CUSTOM_STORE' | 'ZERO_MAPPED'
@@ -163,9 +164,11 @@ export default function ProductsPage() {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: async (id: string) => {
+    mutationFn: async ({ id, deleteFromStores }: { id: string; deleteFromStores: boolean }) => {
       setDeletingId(id);
-      const res: any = await api.delete(`/products/${id}`);
+      const res: any = await api.delete(`/products/${id}?deleteFromStores=${deleteFromStores}`, {
+        data: { deleteFromStores },
+      });
       return res.data;
     },
     onSuccess: (data: any) => {
@@ -1654,13 +1657,38 @@ export default function ProductsPage() {
               </div>
             </div>
 
+            {/* Store Deletion Option Checkbox */}
+            <label className="mt-3 flex items-start gap-2.5 p-3 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
+              <input
+                type="checkbox"
+                checked={deleteFromStores}
+                onChange={(e) => setDeleteFromStores(e.target.checked)}
+                className="mt-0.5 rounded border-slate-700 text-brand-600 focus:ring-0 focus:ring-offset-0 bg-slate-900"
+              />
+              <div className="space-y-0.5">
+                <span className="text-xs font-semibold text-slate-200">
+                  Also delete / end listings on external stores (eBay, Shopify)
+                </span>
+                <p className="text-[11px] text-slate-400 leading-normal">
+                  {deleteFromStores
+                    ? '⚠️ Warning: Listings will be actively ended/deleted on eBay and Shopify stores.'
+                    : 'Unchecked (Default): Unmaps and deletes product from this platform only, keeping your listings live and active on eBay and Shopify.'}
+                </p>
+              </div>
+            </label>
+
             <div className="mt-3 p-3 bg-red-950/30 border border-red-500/20 rounded-xl text-[11px] text-red-300 flex items-start gap-2.5">
               <Info className="w-4 h-4 shrink-0 text-red-400 mt-0.5" />
               <div className="space-y-1">
-                <span className="font-semibold block text-red-200">Automated Sequence:</span>
+                <span className="font-semibold block text-red-200">Action Summary:</span>
                 <ol className="list-decimal list-inside space-y-0.5 text-slate-300">
-                  <li>Listing is unmapped and ended/removed on eBay, Shopify, and custom stores.</li>
-                  <li>Product, variants, and stock records are completely deleted from this platform.</li>
+                  <li>Product mappings are detached from our platform.</li>
+                  {deleteFromStores ? (
+                    <li className="text-red-300">Listing is deleted / ended on connected eBay and Shopify stores.</li>
+                  ) : (
+                    <li className="text-emerald-400">External store listings (eBay, Shopify) remain active and untouched.</li>
+                  )}
+                  <li>Product, variants, and stock records are deleted from our platform catalog.</li>
                 </ol>
               </div>
             </div>
@@ -1668,7 +1696,10 @@ export default function ProductsPage() {
             <div className="mt-6 flex items-center justify-end gap-3">
               <button
                 type="button"
-                onClick={() => setProductToDelete(null)}
+                onClick={() => {
+                  setProductToDelete(null);
+                  setDeleteFromStores(false);
+                }}
                 disabled={deleteMutation.isPending}
                 className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold transition cursor-pointer"
               >
@@ -1678,7 +1709,7 @@ export default function ProductsPage() {
                 type="button"
                 onClick={() => {
                   setDeletingId(productToDelete._id);
-                  deleteMutation.mutate(productToDelete._id);
+                  deleteMutation.mutate({ id: productToDelete._id, deleteFromStores });
                 }}
                 disabled={deleteMutation.isPending}
                 className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-xl text-xs font-semibold shadow-lg shadow-red-600/30 transition cursor-pointer disabled:opacity-50"
