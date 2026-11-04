@@ -335,14 +335,26 @@ export class EbayService {
   static resolveMarketplace(connectionOrName?: any): { marketplaceId: string; currency: string; locale: string; siteId: string } {
     let name = '';
     let domain = '';
+    let configuredMarketplace = '';
+    let configuredCurrency = '';
     if (typeof connectionOrName === 'string') {
       name = connectionOrName;
     } else if (connectionOrName) {
       name = connectionOrName.name || '';
-      domain = connectionOrName.config?.storeDomain || connectionOrName.config?.marketplaceId || '';
+      domain = connectionOrName.config?.storeDomain || '';
+      configuredMarketplace = connectionOrName.config?.marketplaceId || '';
+      configuredCurrency = connectionOrName.config?.currency || '';
     }
-    const combined = `${name} ${domain}`.toLowerCase();
-    if (combined.includes('uk') || combined.includes('gb') || combined.includes('ebay_gb')) {
+    const combined = `${name} ${domain} ${configuredMarketplace} ${configuredCurrency}`.toLowerCase();
+    if (
+      combined.includes('uk') ||
+      combined.includes('gb') ||
+      combined.includes('ebay_gb') ||
+      combined.includes('wiz_mart') ||
+      combined.includes('gem') ||
+      configuredCurrency.toUpperCase() === 'GBP' ||
+      configuredCurrency.toUpperCase() === 'EUR'
+    ) {
       return { marketplaceId: 'EBAY_GB', currency: 'GBP', locale: 'en-GB', siteId: '3' };
     }
     return { marketplaceId: 'EBAY_US', currency: 'USD', locale: 'en-US', siteId: '0' };
@@ -477,6 +489,9 @@ export class EbayService {
           const rawMsg = (e.longMessage || e.message || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
           if (String(e.errorId) === '25002' || rawMsg.toLowerCase().includes('exceed') || rawMsg.toLowerCase().includes('selling limits')) {
             return '[eBay Error 25002] Monthly Selling Limit Reached: This listing would exceed your current eBay account allowance. Please request a selling limit increase in eBay Seller Hub or reduce the product stock quantity.';
+          }
+          if (String(e.errorId) === '25016' || rawMsg.toLowerCase().includes('below the minimum price') || rawMsg.toLowerCase().includes('0.99')) {
+            return '[eBay Error 25016] Invalid Listing Price: eBay requires a minimum listing price of 0.99. Please set the product retail price to at least 0.99.';
           }
           const params = Array.isArray(e.parameters) && e.parameters.length > 0
             ? ` (${e.parameters.map((p: any) => `${p.name}=${p.value}`).join(', ')})`
@@ -876,7 +891,7 @@ export class EbayService {
       pricingSummary: {
         price: {
           currency,
-          value: Number(price || 1).toFixed(2),
+          value: Math.max(0.99, Number(price || 0.99)).toFixed(2),
         },
       },
       merchantLocationKey: merchantLocationKey || (marketplaceId === 'EBAY_GB' ? 'uk-warehouse-1' : 'us-warehouse-1'),
@@ -1179,32 +1194,84 @@ export class EbayService {
           }
         }
 
-        items.push({
-          sku,
-          title,
-          description: title,
-          price,
-          currency: itemCurrency,
-          listingId,
-          offerId: '',
-          offerStatus: 'PUBLISHED',
-          isPublished: true,
-          quantity,
-          images,
-          aspects: {},
-          raw: {
-            itemId: listingId,
+        // Check if item contains multi-variation entries
+        const variationsMatch = itemXml.match(/<Variations>([\s\S]*?)<\/Variations>/i);
+        let parsedVariations = 0;
+        if (variationsMatch) {
+          const varRegex = /<Variation>([\s\S]*?)<\/Variation>/gi;
+          let vMatch;
+          while ((vMatch = varRegex.exec(variationsMatch[1])) !== null) {
+            const vXml = vMatch[1];
+            const getVTag = (tag: string) => {
+              const m = vXml.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'));
+              return m ? m[1].trim() : '';
+            };
+            let vSku = getVTag('SKU');
+            if (!vSku) {
+              vSku = `${sku}-VAR-${parsedVariations + 1}`;
+            }
+            const vPrice = parseFloat(getVTag('StartPrice')) || price;
+            const vTotalQty = parseInt(getVTag('Quantity'), 10) || 0;
+            const vSoldQty = parseInt(getVTag('QuantitySold'), 10) || 0;
+            const vQuantity = Math.max(0, vTotalQty - vSoldQty);
+            const vTitleSuffix = getVTag('VariationTitle') || '';
+            const vTitle = vTitleSuffix ? `${title} - ${vTitleSuffix}` : `${title} (${vSku})`;
+
+            items.push({
+              sku: vSku,
+              title: vTitle,
+              description: title,
+              price: vPrice,
+              currency: itemCurrency,
+              listingId,
+              offerId: '',
+              offerStatus: 'PUBLISHED',
+              isPublished: true,
+              quantity: vQuantity,
+              images,
+              aspects: {},
+              raw: {
+                itemId: listingId,
+                sku: vSku,
+                title: vTitle,
+                price: vPrice,
+                quantity: vQuantity,
+                images,
+                source: 'TRADING_API_VARIATION',
+              },
+            });
+            parsedVariations++;
+          }
+        }
+
+        if (parsedVariations === 0) {
+          items.push({
             sku,
             title,
+            description: title,
             price,
+            currency: itemCurrency,
+            listingId,
+            offerId: '',
+            offerStatus: 'PUBLISHED',
+            isPublished: true,
             quantity,
             images,
-            source: 'TRADING_API_ACTIVE_LIST',
-          },
-        });
+            aspects: {},
+            raw: {
+              itemId: listingId,
+              sku,
+              title,
+              price,
+              quantity,
+              images,
+              source: 'TRADING_API_ACTIVE_LIST',
+            },
+          });
+        }
       }
 
-      logger.info(`[eBay Trading API] Retrieved ${items.length} active listings from seller account`);
+      logger.info(`[eBay Trading API] Retrieved ${items.length} active listings/variants from seller account`);
       return items;
     } catch (tradingErr: any) {
       logger.warn(`[eBay Trading API] Could not fetch active listings via GetMyeBaySelling: ${tradingErr.message}`);
@@ -1267,6 +1334,51 @@ export class EbayService {
       return false;
     } catch (err: any) {
       logger.warn(`[eBay Trading API] ReviseInventoryStatus failed for SKU ${sku || 'N/A'}: ${err.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * End an active traditional eBay listing using Trading API EndItem.
+   */
+  static async endTradingListing(
+    host: string,
+    token: string,
+    listingId: string,
+    siteId: string = '3'
+  ): Promise<boolean> {
+    if (!listingId) return false;
+    const isSandbox = host.includes('sandbox');
+    const endpoint = isSandbox
+      ? 'https://api.sandbox.ebay.com/ws/api.dll'
+      : 'https://api.ebay.com/ws/api.dll';
+
+    const xmlRequest = `<?xml version="1.0" encoding="utf-8"?>
+<EndItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+  <ItemID>${listingId}</ItemID>
+  <EndingReason>NotAvailable</EndingReason>
+</EndItemRequest>`;
+
+    try {
+      const response = await axios.post(endpoint, xmlRequest, {
+        headers: {
+          'X-EBAY-API-CALL-NAME': 'EndItem',
+          'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
+          'X-EBAY-API-SITEID': siteId,
+          'X-EBAY-API-IAF-TOKEN': token.trim(),
+          'Content-Type': 'text/xml; charset=utf-8',
+        },
+        timeout: 20000,
+      });
+
+      const xml = response.data;
+      if (typeof xml === 'string' && (xml.includes('<Ack>Success</Ack>') || xml.includes('<Ack>Warning</Ack>'))) {
+        logger.info(`[eBay Trading API] Successfully ended listing ItemID ${listingId}`);
+        return true;
+      }
+      return false;
+    } catch (err: any) {
+      logger.warn(`[eBay Trading API] EndItem failed for ItemID ${listingId}: ${err.message}`);
       return false;
     }
   }
@@ -1439,17 +1551,36 @@ export class EbayService {
       categoryId?: string;
       marketplaceId?: string;
       aspects?: Record<string, string[]>;
+      listingId?: string;
     }
   ): Promise<{ success: boolean; listingId?: string; offerId?: string; error?: string }> {
     const marketplace = productData.marketplaceId || (sku.includes('GB') || host.includes('uk') ? 'EBAY_GB' : 'EBAY_US');
-    const { locale, currency, marketplaceId } = this.resolveMarketplace(marketplace);
+    const { locale, currency, marketplaceId, siteId } = this.resolveMarketplace(marketplace);
     const client = this.getClient(host, token, locale);
 
     try {
-      if (typeof productData.price !== 'number' || isNaN(productData.price) || productData.price <= 0) {
-        const priceErr = `Invalid price for SKU ${sku}: price must be a positive number to list on eBay`;
-        logger.error(`[eBay Schema Validation] ${priceErr}`);
-        return { success: false, error: priceErr };
+      const effectivePrice = Math.max(0.99, Number(productData.price || 0.99));
+
+      // If this item is already mapped or has an existing eBay ItemID, update stock/price directly via Trading API
+      if (productData.listingId) {
+        try {
+          const revised = await this.reviseTradingListing(host, token, {
+            listingId: productData.listingId,
+            sku,
+            quantity: productData.quantity,
+            price: effectivePrice,
+            siteId,
+          });
+          if (revised) {
+            logger.info(`[eBay Live Revision] Successfully revised live eBay listing ${productData.listingId} for SKU ${sku} (Qty: ${productData.quantity}, Price: ${effectivePrice})`);
+            return {
+              success: true,
+              listingId: productData.listingId,
+            };
+          }
+        } catch (revErr: any) {
+          logger.warn(`Direct revision failed for listing ${productData.listingId}, falling back to REST: ${revErr.message}`);
+        }
       }
 
       const cleanTitle = (productData.title || sku).trim().slice(0, 80);
@@ -1512,7 +1643,7 @@ export class EbayService {
       const offerResult = await this.createOrUpdateAndPublishOffer(client, sku, {
         marketplaceId,
         currency,
-        price: productData.price,
+        price: effectivePrice,
         quantity: productData.quantity,
         title: cleanTitle,
         categoryId: resolvedCategoryId,
@@ -1522,13 +1653,13 @@ export class EbayService {
 
       if (offerResult.status !== 'PUBLISHED' || !offerResult.listingId) {
         const { siteId } = this.resolveMarketplace(marketplace);
-        const existingListingId = offerResult.listingId;
+        const existingListingId = offerResult.listingId || productData.listingId;
         if (existingListingId || sku) {
           const revised = await this.reviseTradingListing(host, token, {
             listingId: existingListingId,
             sku,
             quantity: productData.quantity,
-            price: productData.price,
+            price: effectivePrice,
             siteId,
           });
           if (revised) {
@@ -1562,10 +1693,19 @@ export class EbayService {
   }
 
   /**
-   * Delete an inventory item and associated offers from eBay
+   * Delete an inventory item and associated offers from eBay (supports both REST and Trading API ItemID)
    */
-  static async deleteInventoryItem(host: string, token: string, sku: string): Promise<boolean> {
+  static async deleteInventoryItem(host: string, token: string, sku: string, listingId?: string): Promise<boolean> {
     const client = this.getClient(host, token);
+    let deletedTrading = false;
+    if (listingId) {
+      try {
+        deletedTrading = await this.endTradingListing(host, token, listingId);
+      } catch (err: any) {
+        logger.warn(`Could not end Trading listing ${listingId} during deleteInventoryItem: ${err.message}`);
+      }
+    }
+
     try {
       try {
         const offRes = await client.get(`/sell/inventory/v1/offer?sku=${encodeURIComponent(sku)}`);
@@ -1582,14 +1722,14 @@ export class EbayService {
 
       const res = await client.delete(`/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}`);
       logger.info(`Successfully deleted eBay inventory item for SKU ${sku} on ${host}`);
-      return res.status === 204 || res.status === 200;
+      return res.status === 204 || res.status === 200 || deletedTrading;
     } catch (err: any) {
       if (err.response?.status === 404) {
         logger.info(`eBay inventory item for SKU ${sku} was already deleted or not found on ${host}`);
         return true;
       }
       logger.error(`Failed to delete eBay inventory item for SKU ${sku} on ${host}: ${err.message}`);
-      return false;
+      return deletedTrading;
     }
   }
 
@@ -1610,15 +1750,28 @@ export class EbayService {
   }
 
   /**
-   * Bulk import / sync all inventory items from an eBay store connection
+   * Bulk import / sync all inventory items from an eBay store connection.
+   * Ingests newly created or modified listings, and automatically reconciles
+   * ended/unlisted items on eBay so platform status and mappings stay strictly in sync.
    */
   static async syncAllEbayProducts(
     connection: any,
     organizationId: any
-  ): Promise<{ totalItems: number; syncedCount: number }> {
+  ): Promise<{ totalItems: number; syncedCount: number; endedCount: number }> {
     const { host, token } = await this.getValidCredentials(connection);
     const items = await this.getInventoryItems(host, token, 100, connection);
     let syncedCount = 0;
+    let endedCount = 0;
+
+    const activeSkus = new Set<string>();
+    const activeListingIds = new Set<string>();
+
+    for (const item of items) {
+      const sku = (item.sku || '').toUpperCase().trim();
+      const listingId = String(item.listingId || '').trim();
+      if (sku) activeSkus.add(sku);
+      if (listingId) activeListingIds.add(listingId);
+    }
 
     for (const item of items) {
       try {
@@ -1633,15 +1786,59 @@ export class EbayService {
       }
     }
 
-    connection.lastSyncAt = new Date();
-    await connection.save();
+    // Bidirectional reconciliation: detect items that were ended or deleted directly on eBay
+    try {
+      const existingChannelProds = await ChannelProduct.find({
+        organizationId,
+        channelConnectionId: connection._id,
+        status: { $in: [ChannelProductStatus.ACTIVE, ChannelProductStatus.DRAFT] },
+      });
 
-    return { totalItems: items.length, syncedCount };
+      for (const prod of existingChannelProds) {
+        const prodSku = (prod.sku || '').toUpperCase().trim();
+        const prodListingId = String(prod.externalListingId || prod.externalProductId || '').trim();
+
+        const isStillActive =
+          (prodSku && activeSkus.has(prodSku)) ||
+          (prodListingId && activeListingIds.has(prodListingId));
+
+        if (!isStillActive) {
+          prod.status = ChannelProductStatus.ENDED;
+          prod.syncStatus = SyncStatus.OUT_OF_SYNC;
+          await prod.save();
+
+          await ProductMapping.updateMany(
+            {
+              organizationId,
+              channelProductId: prod._id,
+              status: MappingStatus.MAPPED,
+            },
+            {
+              $set: {
+                status: MappingStatus.UNMAPPED,
+                unmappedAt: new Date(),
+                unmappedReason: 'Listing ended or removed from eBay store',
+              },
+            }
+          );
+          endedCount++;
+          logger.info(`[eBay Sync] Reconciled ended listing on eBay: SKU ${prod.sku} (ItemID: ${prodListingId}) marked ENDED and UNMAPPED`);
+        }
+      }
+    } catch (recErr: any) {
+      logger.warn(`Could not complete ended listings reconciliation: ${recErr.message}`);
+    }
+
+    await ChannelConnection.findByIdAndUpdate(connection._id, {
+      $set: { lastSyncAt: new Date() },
+    }).catch(() => {});
+
+    return { totalItems: items.length, syncedCount, endedCount };
   }
 
   /**
    * Status check and bidirectional reconciliation utility:
-   * 1. Verifies that mapped items in the platform actually exist on eBay.
+   * 1. Verifies that mapped items in the platform actually exist on eBay (supports both Trading and Inventory API).
    * 2. Resolves discrepancies automatically (marks unmapped if deleted/ended on eBay, updates live status).
    * 3. Discovers unmapped eBay items and safely ingests them into the platform catalog.
    */
@@ -1666,6 +1863,18 @@ export class EbayService {
     const { locale } = this.resolveMarketplace(connection);
     const client = this.getClient(host, token, locale);
 
+    // Fetch Trading API active listings once so traditional listings are never falsely marked 404
+    let tradingActiveMap = new Map<string, any>();
+    try {
+      const tradingItems = await this.fetchActiveListingsFromTradingApi(host, token, connection);
+      for (const t of tradingItems) {
+        if (t.listingId) tradingActiveMap.set(String(t.listingId).trim(), t);
+        if (t.sku) tradingActiveMap.set(t.sku.toUpperCase().trim(), t);
+      }
+    } catch (tradErr: any) {
+      logger.warn(`Could not load Trading API active listings for reconciliation: ${tradErr.message}`);
+    }
+
     // Fetch all active mappings for this connection
     const mappings = await ProductMapping.find({
       organizationId,
@@ -1677,7 +1886,25 @@ export class EbayService {
     for (const mapping of mappings) {
       const chProd: any = mapping.channelProductId;
       const sku = (chProd?.sku || '').trim();
-      if (!sku) continue;
+      const listingId = String(chProd?.externalListingId || chProd?.externalProductId || '').trim();
+      if (!sku && !listingId) continue;
+
+      // Check if active via Trading API first
+      const tradingMatch = (listingId && tradingActiveMap.get(listingId)) || (sku && tradingActiveMap.get(sku.toUpperCase()));
+      if (tradingMatch) {
+        verifiedCount++;
+        if (
+          chProd.status !== ChannelProductStatus.ACTIVE ||
+          chProd.syncStatus !== SyncStatus.SYNCED
+        ) {
+          chProd.status = ChannelProductStatus.ACTIVE;
+          chProd.syncStatus = SyncStatus.SYNCED;
+          chProd.lastSyncedAt = new Date();
+          await chProd.save();
+        }
+        details.push({ sku: sku || listingId, status: 'VERIFIED_ACTIVE', reason: `Active on eBay via Trading API (ItemID: ${tradingMatch.listingId || listingId})` });
+        continue;
+      }
 
       try {
         const itemRes = await client.get(`/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}`);
@@ -1780,8 +2007,9 @@ export class EbayService {
       logger.warn(`[eBay Reconciliation] Error during unmapped items discovery: ${ingestErr.message}`);
     }
 
-    connection.lastSyncAt = new Date();
-    await connection.save();
+    await ChannelConnection.findByIdAndUpdate(connection._id, {
+      $set: { lastSyncAt: new Date() },
+    }).catch(() => {});
 
     logger.info(
       `[eBay Reconciliation] Finished for ${connection.name}: Checked ${mappings.length}, Verified ${verifiedCount}, Resolved ${discrepanciesResolvedCount}, Newly Ingested ${newlyIngestedCount}`

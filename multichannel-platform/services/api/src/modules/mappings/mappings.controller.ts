@@ -412,10 +412,11 @@ export class MappingsController {
         } else if (conn.channelType === ChannelType.EBAY && (chProd.sku || (mapping.canonicalVariantId as any)?.sku)) {
           try {
             const sku = chProd.sku || (mapping.canonicalVariantId as any)?.sku;
+            const listingId = chProd.externalListingId || (chProd.externalProductId && /^\d+$/.test(chProd.externalProductId) ? chProd.externalProductId : undefined);
             const { host, token } = await EbayService.getValidCredentials(conn);
-            storeDeleted = await EbayService.deleteInventoryItem(host, token, sku);
+            storeDeleted = await EbayService.deleteInventoryItem(host, token, sku, listingId);
             if (storeDeleted) {
-              storeDeleteMessage = `and deleted from eBay (${conn.name})`;
+              storeDeleteMessage = `and deleted/ended on eBay (${conn.name})`;
             }
           } catch (ebayErr: any) {
             logger.warn(`Could not delete inventory item from eBay store: ${ebayErr.message}`);
@@ -429,11 +430,11 @@ export class MappingsController {
       mapping.unmappedReason = (req.body?.reason || req.query?.reason || 'User unmapped from product mapping page') as string;
       await mapping.save();
 
-      // Mark ChannelProduct as UNPUBLISHED / unmapped
+      // Mark ChannelProduct as ENDED / unmapped
       if (chProd?._id) {
         await ChannelProduct.findByIdAndUpdate(chProd._id, {
           $set: {
-            status: ChannelProductStatus.UNPUBLISHED,
+            status: ChannelProductStatus.ENDED,
             syncStatus: SyncStatus.OUT_OF_SYNC,
           },
         });
@@ -682,9 +683,10 @@ export class MappingsController {
           } else if (conn.channelType === ChannelType.EBAY && (chProd.sku || (m.canonicalVariantId as any)?.sku)) {
             try {
               const sku = chProd.sku || (m.canonicalVariantId as any)?.sku;
+              const listingId = chProd.externalListingId || (chProd.externalProductId && /^\d+$/.test(chProd.externalProductId) ? chProd.externalProductId : undefined);
               const { host, token } = await EbayService.getValidCredentials(conn);
-              await EbayService.deleteInventoryItem(host, token, sku);
-              storeDeletedCount++;
+              const deleted = await EbayService.deleteInventoryItem(host, token, sku, listingId);
+              if (deleted) storeDeletedCount++;
             } catch {}
           }
         }
@@ -696,7 +698,7 @@ export class MappingsController {
 
         if (chProd?._id) {
           await ChannelProduct.findByIdAndUpdate(chProd._id, {
-            $set: { status: ChannelProductStatus.UNPUBLISHED, syncStatus: SyncStatus.OUT_OF_SYNC },
+            $set: { status: ChannelProductStatus.ENDED, syncStatus: SyncStatus.OUT_OF_SYNC },
           });
         }
       }

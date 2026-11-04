@@ -27,6 +27,9 @@ import {
   ChevronLeft,
   ChevronRight,
   Unlink,
+  AlertTriangle,
+  Loader2,
+  Info,
 } from 'lucide-react';
 import { useCurrency } from '@/lib/currency';
 import { ZeroMappedModal } from '@/components/products/ZeroMappedModal';
@@ -41,6 +44,8 @@ export default function ProductsPage() {
   const [publishingId, setPublishingId] = useState<string | null>(null);
   const [isImporting, setIsImporting] = useState(false);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [productToDelete, setProductToDelete] = useState<any | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   // Channel filter state: 'ALL' | 'SHOPIFY' | 'EBAY' | 'CUSTOM_STORE' | 'ZERO_MAPPED'
   const [channelFilter, setChannelFilter] = useState<string>('ALL');
@@ -159,12 +164,34 @@ export default function ProductsPage() {
 
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
+      setDeletingId(id);
       const res: any = await api.delete(`/products/${id}`);
       return res.data;
     },
-    onSuccess: () => {
+    onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ['canonical-products'] });
       queryClient.invalidateQueries({ queryKey: ['product-mappings'] });
+      queryClient.invalidateQueries({ queryKey: ['channel-connections'] });
+      queryClient.invalidateQueries({ queryKey: ['products-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] });
+      setProductToDelete(null);
+      setDeletingId(null);
+      setNotification({
+        type: 'success',
+        text:
+          data?.data?.message ||
+          data?.message ||
+          'Product successfully unmapped from connected channels and deleted from platform!',
+      });
+      setTimeout(() => setNotification(null), 8000);
+    },
+    onError: (err: any) => {
+      setDeletingId(null);
+      setNotification({
+        type: 'error',
+        text: err.message || 'Failed to unmap and delete product',
+      });
+      setTimeout(() => setNotification(null), 8000);
     },
   });
 
@@ -221,9 +248,12 @@ export default function ProductsPage() {
       setPublishingId(null);
       setPushingChannelId(null);
       const raw = err?.response?.data?.error?.message || err.message || 'Failed to publish product to sales channel';
-      const clean = raw.includes('25002') || raw.toLowerCase().includes('exceed')
-        ? 'eBay Monthly Selling Limit Reached (Error 25002): Your eBay seller account has reached its monthly listing allowance. Request a limit increase in eBay Seller Hub or lower the stock quantity.'
-        : raw.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      let clean = raw.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      if (raw.includes('25002') || raw.toLowerCase().includes('exceed')) {
+        clean = 'eBay Monthly Selling Limit Reached (Error 25002): Your eBay seller account has reached its monthly listing allowance. Request a limit increase in eBay Seller Hub or lower the stock quantity.';
+      } else if (raw.includes('25016') || raw.toLowerCase().includes('minimum price of 0.99')) {
+        clean = 'eBay Minimum Price Requirement (Error 25016): The price of this product or its variants is below eBay’s minimum allowed price of 0.99. Please set the retail price to at least 0.99 and push again.';
+      }
       setNotification({
         type: 'error',
         text: clean,
@@ -1000,12 +1030,19 @@ export default function ProductsPage() {
                             <span>Channels</span>
                           </button>
 
+                          {/* Unmap from channels & delete from platform */}
                           <button
-                            onClick={() => deleteMutation.mutate(p._id)}
-                            title="Archive and Unmap"
-                            className="p-1.5 text-slate-400 hover:text-red-400 hover:bg-slate-800 rounded-lg transition cursor-pointer"
+                            onClick={() => setProductToDelete(p)}
+                            disabled={deleteMutation.isPending && deletingId === p._id}
+                            title="Unmap from all channels (Shopify, eBay, Custom) and delete from platform"
+                            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-red-500/10 hover:bg-red-600 text-red-400 hover:text-white rounded-lg border border-red-500/20 hover:border-red-500 transition text-[11px] font-semibold cursor-pointer disabled:opacity-50"
                           >
-                            <Trash2 className="w-3.5 h-3.5" />
+                            {deleteMutation.isPending && deletingId === p._id ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <Trash2 className="w-3.5 h-3.5" />
+                            )}
+                            <span>Unmap & Delete</span>
                           </button>
                         </div>
                       </td>
@@ -1574,6 +1611,87 @@ export default function ProductsPage() {
                   <>
                     <Download className="w-3.5 h-3.5" />
                     <span>Export CSV</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Unmap from Channels & Delete Product Confirmation Modal */}
+      {productToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="bg-slate-900 border border-red-500/30 rounded-2xl p-6 max-w-md w-full shadow-2xl relative animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-start gap-3">
+              <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 shrink-0">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-base font-bold text-white">Unmap from Channels & Delete Product</h3>
+                <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                  This action unmaps and removes the product from all external stores, then permanently removes it from your platform catalog.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-4 p-3.5 bg-slate-950/80 rounded-xl border border-slate-800/80 space-y-2 text-xs">
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400 font-medium">Product:</span>
+                <span className="text-white font-semibold truncate max-w-[220px]">{productToDelete.title}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400 font-medium">Master SKU:</span>
+                <span className="text-slate-200 font-mono font-semibold">{productToDelete.masterSku}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400 font-medium">Mapped Channels:</span>
+                <span className="text-emerald-400 font-semibold">
+                  {getProductMappings(productToDelete._id).length > 0
+                    ? Array.from(new Set(getProductMappings(productToDelete._id).map((m: any) => m.channelType))).join(', ')
+                    : '0 Mapped (Catalog Only)'}
+                </span>
+              </div>
+            </div>
+
+            <div className="mt-3 p-3 bg-red-950/30 border border-red-500/20 rounded-xl text-[11px] text-red-300 flex items-start gap-2.5">
+              <Info className="w-4 h-4 shrink-0 text-red-400 mt-0.5" />
+              <div className="space-y-1">
+                <span className="font-semibold block text-red-200">Automated Sequence:</span>
+                <ol className="list-decimal list-inside space-y-0.5 text-slate-300">
+                  <li>Listing is unmapped and ended/removed on eBay, Shopify, and custom stores.</li>
+                  <li>Product, variants, and stock records are completely deleted from this platform.</li>
+                </ol>
+              </div>
+            </div>
+
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setProductToDelete(null)}
+                disabled={deleteMutation.isPending}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setDeletingId(productToDelete._id);
+                  deleteMutation.mutate(productToDelete._id);
+                }}
+                disabled={deleteMutation.isPending}
+                className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-xl text-xs font-semibold shadow-lg shadow-red-600/30 transition cursor-pointer disabled:opacity-50"
+              >
+                {deleteMutation.isPending ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Unmapping & Deleting...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Confirm Unmap & Delete</span>
                   </>
                 )}
               </button>

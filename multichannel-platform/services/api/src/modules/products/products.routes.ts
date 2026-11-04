@@ -18,6 +18,7 @@ router.get('/:id', ProductsController.getById);
 router.post('/', validate(CreateProductSchema), ProductsController.create);
 router.put('/:id', ProductsController.update);
 router.post('/:id/publish', ProductsController.publish);
+router.post('/:id/unmap-and-delete', ProductsController.unmapAndDelete);
 router.delete('/:id', ProductsController.delete);
 
 export default router;

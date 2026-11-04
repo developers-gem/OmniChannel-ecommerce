@@ -19,6 +19,8 @@ import {
   ChannelProductStatus,
   SyncStatus,
   MappingStatus,
+  NotificationSeverity,
+  NotificationCategory,
 } from '@multichannel/shared';
 import { runInTransaction } from '../../database';
 import { logger } from '../../utils/logger';
@@ -497,6 +499,7 @@ export class ProductsController {
                 organizationId: req.tenantId,
                 canonicalVariantId: m.canonicalVariantId,
               });
+              const existingListingId = chProd.externalListingId || (chProd.externalProductId && /^\d+$/.test(chProd.externalProductId) ? chProd.externalProductId : undefined);
               await EbayService.setInventoryItem(host, token, chProd.sku, {
                 title: product.title,
                 description: product.description || product.title,
@@ -505,7 +508,8 @@ export class ProductsController {
                 images: (product.images || []).map((img: any) => typeof img === 'string' ? img : img.url).filter(Boolean),
                 brand: product.brand,
                 category: product.category,
-                marketplaceId: conn.config?.marketplaceId || (conn.name.toLowerCase().includes('uk') ? 'EBAY_GB' : undefined),
+                marketplaceId: conn.config?.marketplaceId || (conn.name.toLowerCase().includes('uk') || conn.name.toLowerCase().includes('gem') ? 'EBAY_GB' : undefined),
+                listingId: existingListingId,
               });
               await ChannelProduct.findByIdAndUpdate(chProd._id, {
                 $set: {
@@ -557,8 +561,13 @@ export class ProductsController {
     }
   }
 
-  // DELETE /api/v1/products/:id - Archive or delete product and safely unmap
+  // DELETE /api/v1/products/:id - Unmap from all channels & permanently delete from platform
   static async delete(req: Request, res: Response) {
+    return ProductsController.unmapAndDelete(req, res);
+  }
+
+  // POST /api/v1/products/:id/unmap-and-delete
+  static async unmapAndDelete(req: Request, res: Response) {
     try {
       const { id } = req.params;
 
@@ -574,24 +583,147 @@ export class ProductsController {
         });
       }
 
-      // Safe unmap
+      // 1. Find all variants of this canonical product
+      const variants = await ProductVariant.find({
+        organizationId: req.tenantId,
+        canonicalProductId: product._id,
+      });
+      const variantIds = variants.map((v) => v._id);
+
+      // 2. Find all mappings for this product or any of its variants
+      const mappings = await ProductMapping.find({
+        organizationId: req.tenantId,
+        $or: [
+          { canonicalProductId: product._id },
+          { canonicalVariantId: { $in: variantIds } },
+        ],
+      })
+        .populate('channelConnectionId')
+        .populate('channelProductId');
+
+      let unmappedCount = 0;
+      const unmappedStores: string[] = [];
+
+      // 3. For each mapping: un-map and delete/end on the external channel stores (Shopify, eBay, Custom)
+      for (const m of mappings) {
+        const conn: any = m.channelConnectionId;
+        const chProd: any = m.channelProductId;
+        if (!conn) continue;
+
+        if (conn.channelType === ChannelType.SHOPIFY && chProd?.externalProductId) {
+          try {
+            const { domain, token } = ShopifyService.getCredentials(conn);
+            const ok = await ShopifyService.deleteProduct(domain, token, chProd.externalProductId);
+            if (ok) {
+              unmappedStores.push(`Shopify (${conn.name})`);
+              unmappedCount++;
+            }
+          } catch (shErr: any) {
+            logger.warn(`Could not delete product ${chProd.externalProductId} from Shopify: ${shErr.message}`);
+          }
+        } else if (conn.channelType === ChannelType.EBAY) {
+          try {
+            const sku =
+              chProd?.sku ||
+              variants.find((v) => v._id.toString() === m.canonicalVariantId?.toString())?.sku ||
+              product.masterSku;
+            const listingId =
+              chProd?.externalListingId ||
+              (chProd?.externalProductId && /^\d+$/.test(chProd.externalProductId)
+                ? chProd.externalProductId
+                : undefined);
+            const { host, token } = await EbayService.getValidCredentials(conn);
+            const ok = await EbayService.deleteInventoryItem(host, token, sku, listingId);
+            if (ok) {
+              unmappedStores.push(`eBay (${conn.name})`);
+              unmappedCount++;
+            }
+          } catch (ebErr: any) {
+            logger.warn(`Could not delete eBay item for product ${product.masterSku}: ${ebErr.message}`);
+          }
+        } else if (conn.channelType === ChannelType.CUSTOM_STORE) {
+          unmappedStores.push(`Custom Store (${conn.name})`);
+          unmappedCount++;
+        }
+
+        if (chProd?._id) {
+          await ChannelProduct.findByIdAndUpdate(chProd._id, {
+            $set: {
+              status: ChannelProductStatus.ENDED,
+              syncStatus: SyncStatus.OUT_OF_SYNC,
+            },
+          });
+        }
+      }
+
+      // 4. Delete mappings
       await ProductMapping.deleteMany({
+        organizationId: req.tenantId,
+        $or: [
+          { canonicalProductId: product._id },
+          { canonicalVariantId: { $in: variantIds } },
+        ],
+      });
+
+      // 5. Delete inventory items & movements
+      await InventoryMovement.deleteMany({
+        organizationId: req.tenantId,
+        canonicalVariantId: { $in: variantIds },
+      });
+      await InventoryItem.deleteMany({
+        organizationId: req.tenantId,
+        canonicalVariantId: { $in: variantIds },
+      });
+
+      // 6. Delete cost history
+      await ProductCostHistory.deleteMany({
         organizationId: req.tenantId,
         canonicalProductId: product._id,
       });
 
-      // Archive product
-      product.status = ProductStatus.ARCHIVED;
-      await product.save();
+      // 7. Delete variants
+      await ProductVariant.deleteMany({
+        organizationId: req.tenantId,
+        canonicalProductId: product._id,
+      });
+
+      // 8. Delete CanonicalProduct from platform
+      await CanonicalProduct.deleteOne({
+        _id: product._id,
+        organizationId: req.tenantId,
+      });
+
+      // 9. Send notification
+      const storeDetails =
+        unmappedStores.length > 0
+          ? `unmapped & removed from ${Array.from(new Set(unmappedStores)).join(', ')}`
+          : 'unmapped from all channels';
+
+      await NotificationService.create({
+        organizationId: req.tenantId,
+        title: `Product Deleted and Unmapped: ${product.title}`,
+        message: `Product "${product.title}" (${product.masterSku}) was successfully ${storeDetails} and deleted from the platform.`,
+        severity: NotificationSeverity.WARNING,
+        category: NotificationCategory.INTEGRATION,
+        link: '/products',
+      });
+
+      logger.info(
+        `[Product Unmap & Delete] Product "${product.title}" (${id}) unmapped from ${unmappedCount} channel listings and deleted from platform`
+      );
 
       return res.json({
         success: true,
-        data: { message: 'Product successfully archived and unmapped from all channels' },
+        data: {
+          message: `Product "${product.title}" successfully ${storeDetails} and deleted from platform catalog.`,
+          unmappedCount,
+        },
       });
     } catch (error: any) {
+      logger.error('Failed to unmap and delete product:', error);
       return res.status(500).json({
         success: false,
-        error: { message: error.message || 'Failed to archive product' },
+        error: { message: error.message || 'Failed to unmap and delete product' },
       });
     }
   }
@@ -1219,8 +1351,9 @@ export class ProductsController {
               }
             }
 
-            conn.lastSyncAt = new Date();
-            await conn.save();
+            await ChannelConnection.findByIdAndUpdate(conn._id, {
+              $set: { lastSyncAt: new Date() },
+            }).catch(() => {});
 
             results.push({
               channelId: conn._id,
@@ -1272,10 +1405,21 @@ export class ProductsController {
                 .map((img: any) => (typeof img === 'string' ? img : img.url))
                 .filter(Boolean);
 
-              const basePrice = typeof platformVariant.retailPrice === 'number' ? platformVariant.retailPrice : (product.defaultRetailPrice || 0);
-              const finalPrice = feePercent > 0
-                ? Math.round(basePrice * (1 + feePercent / 100) * 100) / 100
-                : basePrice;
+              const rawPrice = typeof platformVariant.retailPrice === 'number' && platformVariant.retailPrice > 0
+                ? platformVariant.retailPrice
+                : (typeof product.defaultRetailPrice === 'number' && product.defaultRetailPrice > 0 ? product.defaultRetailPrice : 0.99);
+              const computedPrice = feePercent > 0
+                ? Math.round(rawPrice * (1 + feePercent / 100) * 100) / 100
+                : rawPrice;
+              const finalPrice = Math.max(0.99, Number(computedPrice.toFixed(2)));
+
+              const existingChProd = await ChannelProduct.findOne({
+                organizationId: req.tenantId,
+                channelConnectionId: conn._id,
+                $or: [{ sku: platformVariant.sku }, { externalVariantId: platformVariant.sku }],
+              });
+
+              const existingListingId = existingChProd?.externalListingId || (existingChProd?.externalProductId && /^\d+$/.test(existingChProd.externalProductId) ? existingChProd.externalProductId : undefined);
 
               const setResult = await EbayService.setInventoryItem(host, token, platformVariant.sku, {
                 title: variantTitle,
@@ -1285,10 +1429,11 @@ export class ProductsController {
                 images,
                 brand: product.brand || 'Generic',
                 category: product.category,
-                marketplaceId: conn.config?.marketplaceId || (conn.name.toLowerCase().includes('uk') ? 'EBAY_GB' : undefined),
+                marketplaceId: conn.config?.marketplaceId || (conn.name.toLowerCase().includes('uk') || conn.name.toLowerCase().includes('gem') ? 'EBAY_GB' : undefined),
+                listingId: existingListingId,
               });
 
-              if (!setResult.success || !setResult.listingId) {
+              if (!setResult.success || (!setResult.listingId && !existingListingId)) {
                 const failReason = setResult.error || `Publishing to eBay failed for SKU ${platformVariant.sku}: no confirmed ItemID returned from eBay`;
                 logger.error(`[eBay Outbound Sync Failed] ${failReason}`);
 
@@ -1322,7 +1467,7 @@ export class ProductsController {
                 throw new Error(failReason);
               }
 
-              const listingId = setResult.listingId;
+              const listingId = setResult.listingId || existingListingId!;
               const channelProd = await ChannelProduct.findOneAndUpdate(
                 {
                   organizationId: req.tenantId,
@@ -1385,8 +1530,9 @@ export class ProductsController {
               createdMappings.push(mapping);
             }
 
-            conn.lastSyncAt = new Date();
-            await conn.save();
+            await ChannelConnection.findByIdAndUpdate(conn._id, {
+              $set: { lastSyncAt: new Date() },
+            }).catch(() => {});
 
             results.push({
               channelId: conn._id,

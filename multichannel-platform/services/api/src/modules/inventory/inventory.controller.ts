@@ -302,18 +302,20 @@ export class InventoryController {
           if (conn.channelType === ChannelType.EBAY && chProd?.sku) {
             try {
               const { host, token } = await EbayService.getValidCredentials(conn);
+              const existingListingId = chProd.externalListingId || (chProd.externalProductId && /^\d+$/.test(chProd.externalProductId) ? chProd.externalProductId : undefined);
               const setResult = await EbayService.setInventoryItem(host, token, chProd.sku, {
                 title: chProd.title,
                 quantity: item.availableToAllocate,
                 price: finalPrice,
-                marketplaceId: conn.config?.marketplaceId || (conn.name.toLowerCase().includes('uk') ? 'EBAY_GB' : undefined),
+                marketplaceId: conn.config?.marketplaceId || (conn.name.toLowerCase().includes('uk') || conn.name.toLowerCase().includes('gem') ? 'EBAY_GB' : undefined),
+                listingId: existingListingId,
               });
               await ChannelProduct.findByIdAndUpdate(chProd._id, {
                 $set: {
                   inventoryQuantity: item.availableToAllocate,
                   price: finalPrice,
                   lastSyncedAt: new Date(),
-                  ...(setResult.listingId ? { externalProductId: setResult.listingId } : {}),
+                  ...(setResult.listingId ? { externalProductId: setResult.listingId, externalListingId: setResult.listingId } : {}),
                 },
               });
               logger.info(`Auto-propagated inventory & price to eBay for SKU ${chProd.sku} (stock: ${item.availableToAllocate}, price: ${finalPrice})`);

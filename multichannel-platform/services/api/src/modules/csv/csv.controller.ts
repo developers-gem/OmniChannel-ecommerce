@@ -8,8 +8,10 @@ import {
   InventoryItem,
   ProductCostHistory,
   InventoryMovement,
+  ChannelProduct,
+  ProductMapping,
 } from '../../database/models';
-import { CsvJobStatus, InventoryChangeType } from '@multichannel/shared';
+import { CsvJobStatus, InventoryChangeType, MappingConfidence, MappingStatus } from '@multichannel/shared';
 import { logger } from '../../utils/logger';
 
 // Prevent spreadsheet formula injection (=, +, -, @)
@@ -432,6 +434,39 @@ export class CsvController {
               });
             }
             createdCount++;
+          }
+
+          // Auto-link with matching channel products (eBay, etc.) to ensure instant mapping
+          const matchingChannelProducts = await ChannelProduct.find({
+            organizationId: req.tenantId,
+            sku,
+          });
+          for (const chProd of matchingChannelProducts) {
+            await ProductMapping.findOneAndUpdate(
+              {
+                organizationId: req.tenantId,
+                channelProductId: chProd._id,
+              },
+              {
+                $set: {
+                  canonicalProductId: canonicalProd._id,
+                  canonicalVariantId: variant._id,
+                  channelConnectionId: chProd.channelConnectionId,
+                  channelProductId: chProd._id,
+                  channelType: chProd.channelType,
+                  mappingConfidence: MappingConfidence.EXACT_SKU,
+                  syncPrice: true,
+                  syncInventory: true,
+                  status: MappingStatus.MAPPED,
+                  updatedAt: new Date(),
+                },
+                $unset: {
+                  unmappedAt: 1,
+                  unmappedReason: 1,
+                },
+              },
+              { upsert: true, new: true }
+            );
           }
 
           successfulRows++;

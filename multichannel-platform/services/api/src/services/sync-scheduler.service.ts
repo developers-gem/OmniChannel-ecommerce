@@ -1,4 +1,4 @@
-﻿import {
+import {
   ChannelConnection,
   ProductMapping,
   ProductVariant,
@@ -151,6 +151,8 @@ export class SyncSchedulerService {
             .map((img: any) => (typeof img === 'string' ? img : img.url))
             .filter(Boolean);
 
+          const existingListingId = chProd.externalListingId || (chProd.externalProductId && /^\d+$/.test(chProd.externalProductId) ? chProd.externalProductId : undefined);
+
           const setResult = await EbayService.setInventoryItem(host, token, chProd.sku, {
             title: canonicalProduct?.title || variant.title,
             description: canonicalProduct?.description || variant.title,
@@ -159,12 +161,16 @@ export class SyncSchedulerService {
             images,
             brand: canonicalProduct?.brand || 'Generic',
             marketplaceId,
+            listingId: existingListingId,
           });
 
           if (setResult?.success) {
             chProd.inventoryQuantity = currentStock;
             chProd.price = currentPrice;
             chProd.lastSyncedAt = new Date();
+            if (setResult.listingId) {
+              chProd.externalListingId = setResult.listingId;
+            }
             await chProd.save();
             logger.info(`SyncScheduler: Auto-pushed updated stock (${currentStock}) & price (${currentPrice}) to eBay for SKU ${chProd.sku}`);
           }

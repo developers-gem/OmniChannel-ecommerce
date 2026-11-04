@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import axios from 'axios';
 import jwt from 'jsonwebtoken';
 import { ChannelConnection, ChannelProduct, ProductMapping } from '../../database/models';
-import { ChannelType, ChannelStatus } from '@multichannel/shared';
+import { ChannelType, ChannelStatus, ChannelProductStatus } from '@multichannel/shared';
 import { encryptSecret, decryptSecret, redactSecrets } from '../../utils/crypto';
 import { validateSafeUrl } from '../../utils/ssrf';
 import { logger } from '../../utils/logger';
@@ -21,12 +21,12 @@ export class ChannelsController {
       const connectionIds = connections.map((c) => c._id);
 
       const listingCounts = await ChannelProduct.aggregate([
-        { $match: { channelConnectionId: { $in: connectionIds } } },
+        { $match: { channelConnectionId: { $in: connectionIds }, status: { $nin: [ChannelProductStatus.ENDED, ChannelProductStatus.UNPUBLISHED] } } },
         { $group: { _id: '$channelConnectionId', totalListings: { $sum: 1 } } },
       ]);
 
       const productCounts = await ChannelProduct.aggregate([
-        { $match: { channelConnectionId: { $in: connectionIds } } },
+        { $match: { channelConnectionId: { $in: connectionIds }, status: { $nin: [ChannelProductStatus.ENDED, ChannelProductStatus.UNPUBLISHED] } } },
         {
           $group: {
             _id: {

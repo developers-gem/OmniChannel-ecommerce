@@ -237,14 +237,19 @@ export class SyncController {
                     canonicalVariantId: variant._id,
                   });
                   if (invItem && chProd.sku) {
+                    const existingListingId = chProd.externalListingId || (chProd.externalProductId && /^\d+$/.test(chProd.externalProductId) ? chProd.externalProductId : undefined);
                     const setResult = await EbayService.setInventoryItem(host, token, chProd.sku, {
                       title: chProd.title,
                       quantity: invItem.availableToAllocate,
                       price: variant.retailPrice,
+                      listingId: existingListingId,
                     });
                     if (setResult?.success) {
                       chProd.inventoryQuantity = invItem.availableToAllocate;
                       chProd.lastSyncedAt = new Date();
+                      if (setResult.listingId) {
+                        chProd.externalListingId = setResult.listingId;
+                      }
                       await chProd.save();
                       syncedCount++;
                     }
@@ -300,14 +305,19 @@ export class SyncController {
               } else if (conn?.channelType === ChannelType.EBAY && chProd?.sku && variant) {
                 try {
                   const { host, token } = await EbayService.getValidCredentials(conn);
+                  const existingListingId = chProd.externalListingId || (chProd.externalProductId && /^\d+$/.test(chProd.externalProductId) ? chProd.externalProductId : undefined);
                   const setResult = await EbayService.setInventoryItem(host, token, chProd.sku, {
                     title: chProd.title,
                     quantity: chProd.inventoryQuantity || 0,
                     price: variant.retailPrice,
+                    listingId: existingListingId,
                   });
                   if (setResult?.success) {
                     chProd.price = variant.retailPrice;
                     chProd.lastSyncedAt = new Date();
+                    if (setResult.listingId) {
+                      chProd.externalListingId = setResult.listingId;
+                    }
                     await chProd.save();
                     syncedCount++;
                   }
@@ -451,24 +461,26 @@ export class SyncController {
             const { host, token } = await EbayService.getValidCredentials(conn);
             const items = await EbayService.getInventoryItems(host, token, 100, conn);
             const activeSkus = new Set<string>();
+            const activeListingIds = new Set<string>();
 
             for (const item of items) {
               const sku = (item.sku || '').trim();
               const listingId = String(item.listingId || item.sku || '').trim();
               const cleanSku = (sku || (listingId ? `EBAY-${listingId}` : `EBAY-ITEM-${Date.now()}`)).toUpperCase().trim();
-              activeSkus.add(cleanSku);
-
+              if (cleanSku) activeSkus.add(cleanSku);
+              if (listingId) activeListingIds.add(listingId);
 
               await ChannelProduct.findOneAndUpdate(
                 {
                   organizationId: req.tenantId,
                   channelConnectionId: conn._id,
-                  sku: cleanSku,
+                  $or: [{ sku: cleanSku }, ...(listingId ? [{ externalProductId: listingId }] : [])],
                 },
                 {
                   channelType: ChannelType.EBAY,
-                  externalProductId: listingId,
+                  externalProductId: listingId || cleanSku,
                   externalVariantId: cleanSku,
+                  externalListingId: listingId || undefined,
                   title: item.title,
                   sku: cleanSku,
                   barcode: '',
@@ -489,7 +501,41 @@ export class SyncController {
               );
             }
 
-            // Stale deletion omitted to preserve persistent mappings
+            // Reconcile ended/deleted eBay listings
+            const existingChannelProds = await ChannelProduct.find({
+              organizationId: req.tenantId,
+              channelConnectionId: conn._id,
+              status: { $in: [ChannelProductStatus.ACTIVE, ChannelProductStatus.DRAFT] },
+            });
+
+            for (const cp of existingChannelProds) {
+              const cpSku = (cp.sku || '').toUpperCase().trim();
+              const cpListingId = String(cp.externalListingId || cp.externalProductId || '').trim();
+              const isStillActive =
+                (cpSku && activeSkus.has(cpSku)) ||
+                (cpListingId && activeListingIds.has(cpListingId));
+
+              if (!isStillActive) {
+                cp.status = ChannelProductStatus.ENDED;
+                cp.syncStatus = SyncStatus.OUT_OF_SYNC;
+                await cp.save();
+
+                await ProductMapping.updateMany(
+                  {
+                    organizationId: req.tenantId,
+                    channelProductId: cp._id,
+                    status: MappingStatus.MAPPED,
+                  },
+                  {
+                    $set: {
+                      status: MappingStatus.UNMAPPED,
+                      unmappedAt: new Date(),
+                      unmappedReason: 'Listing ended or removed from eBay store',
+                    },
+                  }
+                );
+              }
+            }
           } catch (fetchErr: any) {
             logger.warn(`Could not refresh eBay channel catalog directly: ${fetchErr.message}`);
           }
@@ -498,6 +544,7 @@ export class SyncController {
         const channelProducts = await ChannelProduct.find({
           organizationId: req.tenantId,
           channelConnectionId: conn._id,
+          status: { $nin: [ChannelProductStatus.ENDED, ChannelProductStatus.UNPUBLISHED] },
         });
 
         // Group channel products by externalProductId
@@ -708,26 +755,57 @@ export class SyncController {
               newlyImportedVariantsCount++;
             }
 
-            // Create/update 1:1 ProductMapping
-            await ProductMapping.findOneAndUpdate(
-              {
+            // Safely establish unique 1:1 ProductMapping without duplicate key collisions
+            try {
+              let existingMapping = await ProductMapping.findOne({
                 organizationId: req.tenantId,
-                channelProductId: item._id,
-              },
-              {
-                canonicalProductId: canonicalProduct._id,
-                canonicalVariantId: variant._id,
-                channelConnectionId: conn._id,
-                channelProductId: item._id,
-                channelType: conn.channelType,
-                mappingConfidence: MappingConfidence.EXACT_SKU,
-                syncPrice: true,
-                syncInventory: true,
-                status: MappingStatus.MAPPED,
-              },
-              { upsert: true, new: true }
-            );
-            mappedCount++;
+                $or: [
+                  { channelProductId: item._id },
+                  { canonicalVariantId: variant._id, channelConnectionId: conn._id },
+                ],
+              });
+
+              if (existingMapping) {
+                existingMapping.canonicalProductId = canonicalProduct._id;
+                existingMapping.canonicalVariantId = variant._id;
+                existingMapping.channelConnectionId = conn._id;
+                existingMapping.channelProductId = item._id;
+                existingMapping.channelType = conn.channelType;
+                existingMapping.mappingConfidence = MappingConfidence.EXACT_SKU;
+                existingMapping.syncPrice = true;
+                existingMapping.syncInventory = true;
+                existingMapping.status = MappingStatus.MAPPED;
+                existingMapping.updatedAt = new Date();
+                existingMapping.unmappedAt = undefined;
+                existingMapping.unmappedReason = undefined;
+                await existingMapping.save();
+              } else {
+                await ProductMapping.findOneAndUpdate(
+                  {
+                    organizationId: req.tenantId,
+                    canonicalVariantId: variant._id,
+                    channelConnectionId: conn._id,
+                  },
+                  {
+                    $set: {
+                      canonicalProductId: canonicalProduct._id,
+                      channelProductId: item._id,
+                      channelType: conn.channelType,
+                      mappingConfidence: MappingConfidence.EXACT_SKU,
+                      syncPrice: true,
+                      syncInventory: true,
+                      status: MappingStatus.MAPPED,
+                      updatedAt: new Date(),
+                    },
+                    $unset: { unmappedAt: 1, unmappedReason: 1 },
+                  },
+                  { upsert: true, new: true }
+                );
+              }
+              mappedCount++;
+            } catch (mapErr: any) {
+              logger.warn(`Could not establish mapping for channel product ${item._id}: ${mapErr.message}`);
+            }
           }
         }
       }

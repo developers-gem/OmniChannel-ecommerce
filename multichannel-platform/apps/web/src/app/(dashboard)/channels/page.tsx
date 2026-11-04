@@ -200,7 +200,7 @@ export default function ChannelsPage() {
       const info = data?.data || data;
       setBannerMessage({
         type: 'success',
-        text: info?.message || 'Successfully imported all Shopify products into Master Catalog with variants and stock!',
+        text: info?.message || 'Successfully imported all store products into Master Catalog with variants and stock!',
       });
       queryClient.invalidateQueries({ queryKey: ['channel-connections'] });
       queryClient.invalidateQueries({ queryKey: ['canonical-products'] });

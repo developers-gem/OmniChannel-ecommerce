@@ -206,6 +206,9 @@ export default function CsvImportPage() {
       queryClient.invalidateQueries({ queryKey: ['csv-jobs'] });
       queryClient.invalidateQueries({ queryKey: ['canonical-products'] });
       queryClient.invalidateQueries({ queryKey: ['products'] });
+      queryClient.invalidateQueries({ queryKey: ['product-mappings'] });
+      queryClient.invalidateQueries({ queryKey: ['products-summary-counts'] });
+      queryClient.invalidateQueries({ queryKey: ['zero-mapped-count'] });
     },
     onError: (err: any) => {
       setError(err.message || 'CSV Import failed');

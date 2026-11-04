@@ -250,9 +250,9 @@ export default function AddProductPage() {
       if (
         typeof formData.defaultRetailPrice !== 'number' ||
         isNaN(formData.defaultRetailPrice) ||
-        formData.defaultRetailPrice < 0
+        formData.defaultRetailPrice < 0.99
       ) {
-        setError('Please enter a valid Platform Retail Price (cannot be negative).');
+        setError('Please enter a valid Platform Retail Price (minimum 0.99 required for marketplace channels like eBay).');
         return false;
       }
       if (
@@ -270,8 +270,8 @@ export default function AddProductPage() {
           setError(`Variant ${i + 1} (${v.title || 'Untitled'}) must have a valid SKU.`);
           return false;
         }
-        if (typeof v.retailPrice !== 'number' || isNaN(v.retailPrice) || v.retailPrice < 0) {
-          setError(`Variant ${i + 1} (${v.sku}) must have a valid Retail Price.`);
+        if (typeof v.retailPrice !== 'number' || isNaN(v.retailPrice) || v.retailPrice < 0.99) {
+          setError(`Variant ${i + 1} (${v.sku}) must have a valid Retail Price of at least 0.99 (eBay requires a minimum price of 0.99).`);
           return false;
         }
       }
@@ -288,7 +288,7 @@ export default function AddProductPage() {
       setIsSubmittingOnly(true);
       const cleanVariants = variants.map((v) => ({
         ...v,
-        retailPrice: typeof v.retailPrice === 'number' && !isNaN(v.retailPrice) && v.retailPrice >= 0 ? v.retailPrice : 0,
+        retailPrice: typeof v.retailPrice === 'number' && !isNaN(v.retailPrice) && v.retailPrice >= 0.99 ? v.retailPrice : (typeof formData.defaultRetailPrice === 'number' && formData.defaultRetailPrice >= 0.99 ? formData.defaultRetailPrice : 0.99),
         costPrice: typeof v.costPrice === 'number' && !isNaN(v.costPrice) && v.costPrice >= 0 ? v.costPrice : 0,
         initialStock: typeof v.initialStock === 'number' && !isNaN(v.initialStock) && v.initialStock >= 0 ? Math.floor(v.initialStock) : 0,
       }));
@@ -344,7 +344,7 @@ export default function AddProductPage() {
       // Step 1: Create Canonical Product & Variants
       const cleanVariants = variants.map((v) => ({
         ...v,
-        retailPrice: typeof v.retailPrice === 'number' && !isNaN(v.retailPrice) && v.retailPrice >= 0 ? v.retailPrice : 0,
+        retailPrice: typeof v.retailPrice === 'number' && !isNaN(v.retailPrice) && v.retailPrice >= 0.99 ? v.retailPrice : (typeof formData.defaultRetailPrice === 'number' && formData.defaultRetailPrice >= 0.99 ? formData.defaultRetailPrice : 0.99),
         costPrice: typeof v.costPrice === 'number' && !isNaN(v.costPrice) && v.costPrice >= 0 ? v.costPrice : 0,
         initialStock: typeof v.initialStock === 'number' && !isNaN(v.initialStock) && v.initialStock >= 0 ? Math.floor(v.initialStock) : 0,
       }));
@@ -401,9 +401,12 @@ export default function AddProductPage() {
         } catch (pubErr: any) {
           console.error(`Error publishing to channel ${ch.name}:`, pubErr);
           const rawErr = pubErr?.response?.data?.error?.message || pubErr?.message || 'Failed to push to this channel';
-          const cleanErr = rawErr.includes('25002') || rawErr.toLowerCase().includes('exceed')
-            ? 'eBay Monthly Selling Limit Reached (Error 25002): Your eBay seller account has reached its monthly listing allowance. Request a limit increase in eBay Seller Hub or reduce the product stock quantity.'
-            : rawErr.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+          let cleanErr = rawErr.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+          if (rawErr.includes('25002') || rawErr.toLowerCase().includes('exceed')) {
+            cleanErr = 'eBay Monthly Selling Limit Reached (Error 25002): Your eBay seller account has reached its monthly listing allowance. Request a limit increase in eBay Seller Hub or reduce the product stock quantity.';
+          } else if (rawErr.includes('25016') || rawErr.toLowerCase().includes('minimum price of 0.99')) {
+            cleanErr = 'eBay Minimum Price Requirement (Error 25016): The price of this product or its variants is below eBay’s minimum allowed price of 0.99. Please set the retail price to at least 0.99.';
+          }
 
           updatedResults[i] = {
             ...updatedResults[i],

@@ -207,10 +207,18 @@ export class EbayIngestionService {
       isNewProduct = true;
       logger.info(`[eBay Ingestion] Created new CanonicalProduct "${title}" (SKU: ${cleanSku})`);
     } else {
-      // Sync price or images if canonical product had empty fields
+      // Sync price, description, or images if canonical product had empty fields or updated price from eBay
       let canonicalChanged = false;
-      if (price > 0 && (!canonicalProduct.defaultRetailPrice || canonicalProduct.defaultRetailPrice === 0)) {
+      if (price > 0 && canonicalProduct.defaultRetailPrice !== price) {
         canonicalProduct.defaultRetailPrice = price;
+        canonicalChanged = true;
+      }
+      if (title && (canonicalProduct.title.startsWith('eBay Item') || canonicalProduct.title.startsWith('EBAY-'))) {
+        canonicalProduct.title = title;
+        canonicalChanged = true;
+      }
+      if (description && canonicalProduct.description !== description) {
+        canonicalProduct.description = description;
         canonicalChanged = true;
       }
       if (canonicalProduct.images.length === 0 && images.length > 0) {
@@ -247,8 +255,16 @@ export class EbayIngestionService {
       isNewVariant = true;
       logger.info(`[eBay Ingestion] Created ProductVariant for SKU ${cleanSku}`);
     } else {
-      if (price > 0 && (!variant.retailPrice || variant.retailPrice === 0)) {
+      let varChanged = false;
+      if (price > 0 && variant.retailPrice !== price) {
         variant.retailPrice = price;
+        varChanged = true;
+      }
+      if (title && variant.title !== title) {
+        variant.title = title;
+        varChanged = true;
+      }
+      if (varChanged) {
         await variant.save();
       }
     }
@@ -300,6 +316,14 @@ export class EbayIngestionService {
           newTrackedStock: quantity,
           reason: `Synchronized stock from eBay (${prevStock} -> ${quantity})`,
         });
+
+        await NotificationService.notifyProductModified({
+          organizationId,
+          productTitle: title,
+          source: 'eBay',
+          channelType: ChannelType.EBAY,
+          changesSummary: `Stock level updated from ${prevStock} to ${quantity}`,
+        });
       }
     }
 
@@ -327,21 +351,49 @@ export class EbayIngestionService {
       mapping.unmappedReason = undefined;
       await mapping.save();
     } else {
-      mapping = await ProductMapping.create({
-        organizationId,
-        canonicalProductId: canonicalProduct._id,
-        canonicalVariantId: variant._id,
-        channelConnectionId: connection._id,
-        channelProductId: channelProduct._id,
-        channelType: ChannelType.EBAY,
-        mappingConfidence: MappingConfidence.EXACT_SKU,
-        syncPrice: true,
-        syncInventory: true,
-        status: MappingStatus.MAPPED,
-      });
+      try {
+        mapping = await ProductMapping.create({
+          organizationId,
+          canonicalProductId: canonicalProduct._id,
+          canonicalVariantId: variant._id,
+          channelConnectionId: connection._id,
+          channelProductId: channelProduct._id,
+          channelType: ChannelType.EBAY,
+          mappingConfidence: MappingConfidence.EXACT_SKU,
+          syncPrice: true,
+          syncInventory: true,
+          status: MappingStatus.MAPPED,
+        });
+      } catch (mapErr: any) {
+        if (mapErr.code === 11000) {
+          mapping = await ProductMapping.findOneAndUpdate(
+            {
+              organizationId,
+              canonicalVariantId: variant._id,
+              channelConnectionId: connection._id,
+            },
+            {
+              $set: {
+                canonicalProductId: canonicalProduct._id,
+                channelProductId: channelProduct._id,
+                channelType: ChannelType.EBAY,
+                mappingConfidence: MappingConfidence.EXACT_SKU,
+                syncPrice: true,
+                syncInventory: true,
+                status: MappingStatus.MAPPED,
+                updatedAt: new Date(),
+              },
+              $unset: { unmappedAt: 1, unmappedReason: 1 },
+            },
+            { new: true, upsert: true }
+          );
+        } else {
+          throw mapErr;
+        }
+      }
     }
 
-    if (isNewProduct) {
+    if (isNewProduct || isNewVariant) {
       await NotificationService.notifyProductUploaded({
         organizationId,
         productTitle: title,
@@ -355,7 +407,7 @@ export class EbayIngestionService {
       canonicalProductId: canonicalProduct._id,
       canonicalVariantId: variant._id,
       channelProductId: channelProduct._id,
-      mappingId: mapping._id,
+      mappingId: mapping?._id,
       isNewProduct,
       isNewVariant,
       sku: cleanSku,
