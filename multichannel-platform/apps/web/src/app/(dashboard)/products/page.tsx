@@ -111,6 +111,9 @@ export default function ProductsPage() {
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
 
+  // Quick Sync from Stores state
+  const [isQuickSyncing, setIsQuickSyncing] = useState(false);
+
   // Import from Channels Modal states
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [importingChannelId, setImportingChannelId] = useState<string | null>(null);
@@ -215,6 +218,7 @@ export default function ProductsPage() {
       const res: any = await api.post(`/products/${id}/publish`, {
         channelConnectionId,
         forceRepublish,
+        shippingCharge: pushModalProduct?.shippingCharge || 0,
       });
       return res.data || res;
     },
@@ -410,6 +414,34 @@ export default function ProductsPage() {
     }
   };
 
+  const handleQuickSyncFromStores = async () => {
+    setIsQuickSyncing(true);
+    setNotification(null);
+    try {
+      const res: any = await api.post('/sync/trigger', {
+        jobType: 'CATALOG_IMPORT',
+      });
+      await queryClient.invalidateQueries({ queryKey: ['canonical-products'] });
+      await queryClient.invalidateQueries({ queryKey: ['products-summary-counts'] });
+      await queryClient.invalidateQueries({ queryKey: ['zero-mapped-count'] });
+      await queryClient.invalidateQueries({ queryKey: ['product-mappings'] });
+      await queryClient.invalidateQueries({ queryKey: ['channel-connections'] });
+      setNotification({
+        type: 'success',
+        text: res?.data?.message || res?.message || 'Successfully synchronized latest product details and stock from connected stores!',
+      });
+      setTimeout(() => setNotification(null), 6000);
+    } catch (err: any) {
+      setNotification({
+        type: 'error',
+        text: err?.message || 'Failed to sync from stores',
+      });
+      setTimeout(() => setNotification(null), 6000);
+    } finally {
+      setIsQuickSyncing(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -474,6 +506,17 @@ export default function ProductsPage() {
               </span>
             </button>
           )}
+
+          {/* Quick Sync Inbound from Connected Stores */}
+          <button
+            onClick={handleQuickSyncFromStores}
+            disabled={isQuickSyncing}
+            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold px-3.5 py-2.5 rounded-xl shadow-lg shadow-blue-600/20 transition disabled:opacity-50 cursor-pointer"
+            title="Fetch and synchronize latest updates, title changes, and stock from Shopify & connected stores"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isQuickSyncing ? 'animate-spin' : ''}`} />
+            <span>{isQuickSyncing ? 'Syncing Stores...' : 'Sync from Stores'}</span>
+          </button>
 
           {/* Replace Import from Shopify with Import from Channels */}
           <button
@@ -1375,6 +1418,12 @@ export default function ProductsPage() {
                 <span>SKU: <strong className="text-white">{pushModalProduct.masterSku}</strong></span>
                 <span>&bull;</span>
                 <span>Retail: <strong className="text-emerald-400">{format(pushModalProduct.defaultRetailPrice)}</strong></span>
+                {typeof pushModalProduct.shippingCharge === 'number' && pushModalProduct.shippingCharge > 0 && (
+                  <>
+                    <span>&bull;</span>
+                    <span>Shipping: <strong className="text-cyan-400">+{format(pushModalProduct.shippingCharge)}</strong></span>
+                  </>
+                )}
                 <span>&bull;</span>
                 <span>Stock: <strong className="text-white">{pushModalProduct.totalStock ?? 0} units</strong></span>
               </div>

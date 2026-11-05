@@ -253,8 +253,16 @@ export class ProductsController {
         images,
         defaultCostPrice,
         defaultRetailPrice,
+        defaultShippingPrice,
+        shippingCharge,
         variants,
       } = req.body;
+
+      const masterShippingCharge = typeof shippingCharge === 'number' && !isNaN(shippingCharge) && shippingCharge > 0
+        ? shippingCharge
+        : (typeof defaultShippingPrice === 'number' && !isNaN(defaultShippingPrice) && defaultShippingPrice > 0
+            ? defaultShippingPrice
+            : (typeof req.body.shippingPrice === 'number' && !isNaN(req.body.shippingPrice) && req.body.shippingPrice > 0 ? req.body.shippingPrice : 0));
 
       // Duplicate masterSku check
       const existingProduct = await CanonicalProduct.findOne({
@@ -285,6 +293,7 @@ export class ProductsController {
                 options: [{ name: 'Option', value: 'Default' }],
                 costPrice: defaultCostPrice || 0,
                 retailPrice: defaultRetailPrice || 0,
+                shippingCharge: masterShippingCharge,
                 initialStock: req.body.defaultInitialStock || 0,
               },
             ];
@@ -303,6 +312,7 @@ export class ProductsController {
               images: images || [],
               defaultCostPrice: defaultCostPrice || 0,
               defaultRetailPrice: defaultRetailPrice || 0,
+              shippingCharge: masterShippingCharge,
               totalVariants: effectiveVariants.length,
               status: ProductStatus.ACTIVE,
             },
@@ -314,6 +324,12 @@ export class ProductsController {
         const variantList: any[] = [];
 
         for (const v of effectiveVariants) {
+          const variantShipping = typeof v.shippingCharge === 'number' && !isNaN(v.shippingCharge) && v.shippingCharge > 0
+            ? v.shippingCharge
+            : (typeof v.shippingPrice === 'number' && !isNaN(v.shippingPrice) && v.shippingPrice > 0
+                ? v.shippingPrice
+                : masterShippingCharge);
+
           const [variant] = await ProductVariant.create(
             [
               {
@@ -325,6 +341,7 @@ export class ProductsController {
                 options: v.options || [],
                 costPrice: v.costPrice ?? defaultCostPrice ?? 0,
                 retailPrice: v.retailPrice ?? defaultRetailPrice ?? 0,
+                shippingCharge: variantShipping,
                 compareAtPrice: v.compareAtPrice,
                 weight: v.weight,
                 weightUnit: v.weightUnit || 'lb',
@@ -360,6 +377,7 @@ export class ProductsController {
                 safetyStock: 0,
                 availableToAllocate: initialStock,
                 lowStockThreshold: 5,
+                shippingCharge: variantShipping,
               },
             ],
             opts
@@ -441,22 +459,30 @@ export class ProductsController {
   static async update(req: Request, res: Response) {
     try {
       const { id } = req.params;
-      const { title, description, brand, category, tags, images, status, defaultCostPrice, defaultRetailPrice } = req.body;
+      const { title, description, brand, category, tags, images, status, defaultCostPrice, defaultRetailPrice, shippingCharge, defaultShippingPrice } = req.body;
+
+      const updateData: any = {
+        title,
+        description,
+        brand,
+        category,
+        tags,
+        images,
+        status,
+        defaultCostPrice,
+        defaultRetailPrice,
+      };
+
+      if (typeof shippingCharge === 'number' && !isNaN(shippingCharge)) {
+        updateData.shippingCharge = Math.max(0, shippingCharge);
+      } else if (typeof defaultShippingPrice === 'number' && !isNaN(defaultShippingPrice)) {
+        updateData.shippingCharge = Math.max(0, defaultShippingPrice);
+      }
 
       const product = await CanonicalProduct.findOneAndUpdate(
         { _id: id, organizationId: req.tenantId },
         {
-          $set: {
-            title,
-            description,
-            brand,
-            category,
-            tags,
-            images,
-            status,
-            defaultCostPrice,
-            defaultRetailPrice,
-          },
+          $set: updateData,
         },
         { new: true }
       );
@@ -1209,25 +1235,56 @@ export class ProductsController {
 
       const results: any[] = [];
 
+      // Determine effective shipping charge from request body, product variants, or canonical product
+      const requestShipping = typeof req.body.shippingCharge === 'number' && !isNaN(req.body.shippingCharge) && req.body.shippingCharge > 0
+        ? req.body.shippingCharge
+        : (typeof req.body.shippingPrice === 'number' && !isNaN(req.body.shippingPrice) && req.body.shippingPrice > 0
+            ? req.body.shippingPrice
+            : 0);
+
+      const maxVariantShipping = variants.reduce((max, v) => {
+        const sc = typeof v.shippingCharge === 'number' && !isNaN(v.shippingCharge) ? v.shippingCharge : 0;
+        return Math.max(max, sc);
+      }, 0);
+
+      const effectiveProductShipping = requestShipping > 0
+        ? requestShipping
+        : (typeof product.shippingCharge === 'number' && !isNaN(product.shippingCharge) && product.shippingCharge > 0
+            ? product.shippingCharge
+            : (maxVariantShipping > 0 ? maxVariantShipping : 0));
+
+      if (effectiveProductShipping > 0 && (!product.shippingCharge || product.shippingCharge === 0)) {
+        await CanonicalProduct.findByIdAndUpdate(product._id, { $set: { shippingCharge: effectiveProductShipping } }).catch(() => {});
+      }
+
       for (const conn of connections) {
         const chIdStr = conn._id.toString();
+        const defaultFee = conn.channelType === ChannelType.EBAY
+          ? 15
+          : (conn.channelType === ChannelType.SHOPIFY ? 5 : 10);
         const feePercent = typeof channelMarkups?.[chIdStr] === 'number'
           ? channelMarkups[chIdStr]
-          : (typeof markupPercent === 'number' ? markupPercent : 0);
+          : (typeof markupPercent === 'number' ? markupPercent : defaultFee);
 
         if (conn.channelType === ChannelType.SHOPIFY) {
           try {
             const { domain, token } = ShopifyService.getCredentials(conn);
 
-            // Format variants with current stock and adjusted retail price (platform price + channel platform charge)
+            // Format variants with current stock and adjusted retail price ((platform price + shipping charge) + channel platform charge)
             const variantPayload = variants.map((v) => {
               const inv = inventoryItems.find(
                 (i) => i.canonicalVariantId.toString() === v._id.toString()
               );
-              const basePrice = typeof v.retailPrice === 'number' && !isNaN(v.retailPrice) ? v.retailPrice : (product.defaultRetailPrice || 0);
+              const basePrice = typeof v.retailPrice === 'number' && !isNaN(v.retailPrice) && v.retailPrice > 0
+                ? v.retailPrice
+                : (typeof product.defaultRetailPrice === 'number' && product.defaultRetailPrice > 0 ? product.defaultRetailPrice : 0);
+              const variantShipping = (typeof v.shippingCharge === 'number' && !isNaN(v.shippingCharge) && v.shippingCharge > 0)
+                ? v.shippingCharge
+                : effectiveProductShipping;
+              const combinedPrice = basePrice + variantShipping;
               const finalPrice = feePercent > 0
-                ? Math.round(basePrice * (1 + feePercent / 100) * 100) / 100
-                : basePrice;
+                ? Math.round(combinedPrice * (1 + feePercent / 100) * 100) / 100
+                : combinedPrice;
 
               return {
                 title: v.title,
@@ -1292,10 +1349,14 @@ export class ProductsController {
                 const srcVariant = variants[i];
                 const shVariant = shopifyProduct.variants?.[i] || shopifyProduct.variants?.[0];
                 if (shVariant) {
-                  const basePrice = typeof srcVariant.retailPrice === 'number' ? srcVariant.retailPrice : (product.defaultRetailPrice || 0);
+                  const basePrice = typeof srcVariant.retailPrice === 'number' && srcVariant.retailPrice > 0 ? srcVariant.retailPrice : (product.defaultRetailPrice || 0);
+                  const variantShipping = (typeof srcVariant.shippingCharge === 'number' && !isNaN(srcVariant.shippingCharge) && srcVariant.shippingCharge > 0)
+                    ? srcVariant.shippingCharge
+                    : effectiveProductShipping;
+                  const combinedPrice = basePrice + variantShipping;
                   const finalPrice = feePercent > 0
-                    ? Math.round(basePrice * (1 + feePercent / 100) * 100) / 100
-                    : basePrice;
+                    ? Math.round(combinedPrice * (1 + feePercent / 100) * 100) / 100
+                    : combinedPrice;
 
                   await ShopifyService.updateVariantPrice(
                     domain,
@@ -1435,9 +1496,13 @@ export class ProductsController {
               const rawPrice = typeof platformVariant.retailPrice === 'number' && platformVariant.retailPrice > 0
                 ? platformVariant.retailPrice
                 : (typeof product.defaultRetailPrice === 'number' && product.defaultRetailPrice > 0 ? product.defaultRetailPrice : 0.99);
+              const variantShipping = (typeof platformVariant.shippingCharge === 'number' && !isNaN(platformVariant.shippingCharge) && platformVariant.shippingCharge > 0)
+                ? platformVariant.shippingCharge
+                : effectiveProductShipping;
+              const combinedPrice = rawPrice + variantShipping;
               const computedPrice = feePercent > 0
-                ? Math.round(rawPrice * (1 + feePercent / 100) * 100) / 100
-                : rawPrice;
+                ? Math.round(combinedPrice * (1 + feePercent / 100) * 100) / 100
+                : combinedPrice;
               const finalPrice = Math.max(0.99, Number(computedPrice.toFixed(2)));
 
               const existingChProd = await ChannelProduct.findOne({
@@ -1588,6 +1653,113 @@ export class ProductsController {
               channelType: conn.channelType,
               status: 'FAILED',
               error: errorMsg,
+            });
+          }
+        } else if (conn.channelType === ChannelType.CUSTOM_STORE || String(conn.channelType).toUpperCase().includes('CUSTOM')) {
+          try {
+            const createdMappings: any[] = [];
+            for (let i = 0; i < variants.length; i++) {
+              const platformVariant = variants[i];
+              const inv = inventoryItems.find(
+                (invItem) =>
+                  invItem.canonicalVariantId.toString() === platformVariant._id.toString()
+              );
+              const variantTitle =
+                variants.length === 1
+                  ? product.title
+                  : `${product.title} - ${platformVariant.title}`;
+              const stock = inv?.trackedStock || 0;
+
+              const rawPrice = typeof platformVariant.retailPrice === 'number' && platformVariant.retailPrice > 0
+                ? platformVariant.retailPrice
+                : (typeof product.defaultRetailPrice === 'number' && product.defaultRetailPrice > 0 ? product.defaultRetailPrice : 0.99);
+              const variantShipping = (typeof platformVariant.shippingCharge === 'number' && !isNaN(platformVariant.shippingCharge) && platformVariant.shippingCharge > 0)
+                ? platformVariant.shippingCharge
+                : effectiveProductShipping;
+              const combinedPrice = rawPrice + variantShipping;
+              const computedPrice = feePercent > 0
+                ? Math.round(combinedPrice * (1 + feePercent / 100) * 100) / 100
+                : combinedPrice;
+              const finalPrice = Math.max(0.01, Number(computedPrice.toFixed(2)));
+
+              const channelProd = await ChannelProduct.findOneAndUpdate(
+                {
+                  organizationId: req.tenantId,
+                  channelConnectionId: conn._id,
+                  $or: [{ sku: platformVariant.sku }, { externalVariantId: platformVariant.sku }],
+                },
+                {
+                  channelType: conn.channelType,
+                  externalProductId: String(product._id),
+                  externalVariantId: platformVariant.sku,
+                  title: variantTitle,
+                  sku: platformVariant.sku,
+                  barcode: platformVariant.barcode || '',
+                  price: finalPrice,
+                  inventoryQuantity: stock,
+                  status: ChannelProductStatus.ACTIVE,
+                  syncStatus: SyncStatus.SYNCED,
+                  lastSyncedAt: new Date(),
+                  rawPayload: {
+                    sku: platformVariant.sku,
+                    title: variantTitle,
+                    price: finalPrice,
+                    quantity: stock,
+                    shippingCharge: variantShipping,
+                  },
+                },
+                { upsert: true, new: true }
+              );
+
+              const mapping = await ProductMapping.findOneAndUpdate(
+                {
+                  organizationId: req.tenantId,
+                  canonicalVariantId: platformVariant._id,
+                  channelConnectionId: conn._id,
+                },
+                {
+                  $set: {
+                    canonicalProductId: product._id,
+                    canonicalVariantId: platformVariant._id,
+                    channelConnectionId: conn._id,
+                    channelProductId: channelProd._id,
+                    channelType: conn.channelType,
+                    mappingConfidence: MappingConfidence.EXACT_SKU,
+                    syncPrice: true,
+                    syncInventory: true,
+                    status: MappingStatus.MAPPED,
+                    updatedAt: new Date(),
+                  },
+                  $unset: {
+                    unmappedAt: 1,
+                    unmappedReason: 1,
+                  },
+                },
+                { upsert: true, new: true }
+              );
+
+              createdMappings.push(mapping);
+            }
+
+            await ChannelConnection.findByIdAndUpdate(conn._id, {
+              $set: { lastSyncAt: new Date() },
+            }).catch(() => {});
+
+            results.push({
+              channelId: conn._id,
+              channelName: conn.name,
+              channelType: conn.channelType,
+              status: 'SUCCESS',
+              mappingsCount: createdMappings.length,
+            });
+          } catch (customErr: any) {
+            logger.error(`Failed to publish product ${product.masterSku} to custom store ${conn.name}: ${customErr.message}`);
+            results.push({
+              channelId: conn._id,
+              channelName: conn.name,
+              channelType: conn.channelType,
+              status: 'FAILED',
+              error: customErr.message || 'Failed to publish to custom store',
             });
           }
         }

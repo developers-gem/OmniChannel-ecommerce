@@ -274,6 +274,7 @@ export class SyncController {
             }
 
             const mappings = await ProductMapping.find(mappingsQuery)
+              .populate('canonicalProductId')
               .populate('canonicalVariantId')
               .populate('channelProductId')
               .populate('channelConnectionId');
@@ -282,19 +283,40 @@ export class SyncController {
               const conn: any = mapping.channelConnectionId;
               const chProd: any = mapping.channelProductId;
               const variant: any = mapping.canonicalVariantId;
+              const prod: any = mapping.canonicalProductId;
+
+              const defaultFee = conn?.channelType === ChannelType.EBAY
+                ? 15
+                : (conn?.channelType === ChannelType.SHOPIFY ? 5 : 10);
+              const feePercent = typeof conn?.config?.markupPercent === 'number'
+                ? conn.config.markupPercent
+                : defaultFee;
+
+              const basePrice = typeof variant?.retailPrice === 'number' && variant.retailPrice > 0
+                ? variant.retailPrice
+                : (typeof prod?.defaultRetailPrice === 'number' && prod.defaultRetailPrice > 0 ? prod.defaultRetailPrice : 0);
+              const shipCharge = (typeof variant?.shippingCharge === 'number' && variant.shippingCharge > 0)
+                ? variant.shippingCharge
+                : (typeof prod?.shippingCharge === 'number' && prod.shippingCharge > 0 ? prod.shippingCharge : 0);
+              const combinedPrice = basePrice + shipCharge;
+              const computedPrice = feePercent > 0
+                ? Math.round(combinedPrice * (1 + feePercent / 100) * 100) / 100
+                : combinedPrice;
+              const finalPrice = Math.max(conn?.channelType === ChannelType.EBAY ? 0.99 : 0.01, Number(computedPrice.toFixed(2)));
 
               if (conn?.channelType === ChannelType.SHOPIFY && chProd?.externalVariantId && variant) {
                 try {
                   const { domain, token } = ShopifyService.getCredentials(conn);
+
                   const success = await ShopifyService.updateVariantPrice(
                     domain,
                     token,
                     chProd.externalVariantId,
-                    variant.retailPrice
+                    finalPrice
                   );
 
                   if (success) {
-                    chProd.price = variant.retailPrice;
+                    chProd.price = finalPrice;
                     chProd.lastSyncedAt = new Date();
                     await chProd.save();
                     syncedCount++;
@@ -309,11 +331,11 @@ export class SyncController {
                   const setResult = await EbayService.setInventoryItem(host, token, chProd.sku, {
                     title: chProd.title,
                     quantity: chProd.inventoryQuantity || 0,
-                    price: variant.retailPrice,
+                    price: finalPrice,
                     listingId: existingListingId,
                   });
                   if (setResult?.success) {
-                    chProd.price = variant.retailPrice;
+                    chProd.price = finalPrice;
                     chProd.lastSyncedAt = new Date();
                     if (setResult.listingId) {
                       chProd.externalListingId = setResult.listingId;
@@ -324,6 +346,11 @@ export class SyncController {
                 } catch (ebayPriceErr: any) {
                   logger.warn(`Failed to sync eBay price for SKU ${chProd.sku}: ${ebayPriceErr.message}`);
                 }
+              } else if ((conn?.channelType === ChannelType.CUSTOM_STORE || String(conn?.channelType).toUpperCase().includes('CUSTOM')) && chProd) {
+                chProd.price = finalPrice;
+                chProd.lastSyncedAt = new Date();
+                await chProd.save();
+                syncedCount++;
               }
             }
             logger.info(`Price sync finished. Synced ${syncedCount} items.`);
@@ -611,15 +638,48 @@ export class SyncController {
             ? 'General'
             : (rawProd?.product_type || 'General');
 
-          // Check if CanonicalProduct with masterSku or title already exists
-          let canonicalProduct = await CanonicalProduct.findOne({
+          // 1. Try finding existing CanonicalProduct by ProductMapping
+          let canonicalProduct: any = null;
+          const existingMapping = await ProductMapping.findOne({
             organizationId: req.tenantId,
-            $or: [{ masterSku }, { title: baseTitle }],
+            channelProductId: firstItem._id,
           });
+          if (existingMapping?.canonicalProductId) {
+            canonicalProduct = await CanonicalProduct.findOne({
+              _id: existingMapping.canonicalProductId,
+              organizationId: req.tenantId,
+            });
+          }
+
+          // 2. Try finding by variant SKU
+          if (!canonicalProduct && firstItem.sku) {
+            const existingVar = await ProductVariant.findOne({
+              organizationId: req.tenantId,
+              sku: firstItem.sku.toUpperCase().trim(),
+            });
+            if (existingVar) {
+              canonicalProduct = await CanonicalProduct.findOne({
+                _id: existingVar.canonicalProductId,
+                organizationId: req.tenantId,
+              });
+            }
+          }
+
+          // 3. Try finding by masterSku or title
+          if (!canonicalProduct) {
+            canonicalProduct = await CanonicalProduct.findOne({
+              organizationId: req.tenantId,
+              $or: [{ masterSku }, { title: baseTitle }],
+            });
+          }
 
           if (canonicalProduct) {
             alreadyImportedProductsCount++;
             let hasProductChanged = false;
+            if (baseTitle && canonicalProduct.title !== baseTitle) {
+              canonicalProduct.title = baseTitle;
+              hasProductChanged = true;
+            }
             if (description && canonicalProduct.description !== description) {
               canonicalProduct.description = description;
               hasProductChanged = true;
@@ -640,7 +700,8 @@ export class SyncController {
               canonicalProduct.images = images;
               hasProductChanged = true;
             }
-            if (firstItem.price !== undefined && firstItem.price > 0 && canonicalProduct.defaultRetailPrice !== firstItem.price) {
+            // Preserve Master Base Retail Price. Do not overwrite existing platform base price with store marked-up price.
+            if ((!canonicalProduct.defaultRetailPrice || canonicalProduct.defaultRetailPrice <= 0) && firstItem.price !== undefined && firstItem.price > 0) {
               canonicalProduct.defaultRetailPrice = firstItem.price;
               hasProductChanged = true;
             }
@@ -680,9 +741,29 @@ export class SyncController {
               sku: variantSku,
             });
 
+            if (!variant && item._id) {
+              const varMap = await ProductMapping.findOne({
+                organizationId: req.tenantId,
+                channelProductId: item._id,
+              });
+              if (varMap?.canonicalVariantId) {
+                variant = await ProductVariant.findOne({
+                  _id: varMap.canonicalVariantId,
+                  organizationId: req.tenantId,
+                });
+              }
+            }
+
             if (variant) {
               let hasVarChanged = false;
-              if (item.price !== undefined && variant.retailPrice !== item.price) {
+              const rawVar = item.rawPayload?.variant;
+              const varTitle = rawVar?.title && rawVar.title !== 'Default Title' ? rawVar.title : item.title;
+              if (varTitle && variant.title !== varTitle) {
+                variant.title = varTitle;
+                hasVarChanged = true;
+              }
+              // Preserve Variant Base Retail Price. Do not overwrite existing platform base price with store marked-up price.
+              if ((!variant.retailPrice || variant.retailPrice <= 0) && item.price !== undefined && item.price > 0) {
                 variant.retailPrice = item.price;
                 hasVarChanged = true;
               }

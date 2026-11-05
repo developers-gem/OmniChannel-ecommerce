@@ -40,6 +40,7 @@ export default function AddProductPage() {
     description: 'High-performance over-ear headphones with 40-hour battery life and fast charging.',
     defaultCostPrice: 45.0,
     defaultRetailPrice: 129.99,
+    defaultShippingPrice: 0,
     defaultInitialStock: 100,
   });
 
@@ -50,6 +51,7 @@ export default function AddProductPage() {
     options: Array<{ name: string; value: string }>;
     costPrice: number;
     retailPrice: number;
+    shippingPrice?: number;
     initialStock: number;
   }>>([
     {
@@ -59,6 +61,7 @@ export default function AddProductPage() {
       options: [{ name: 'Color', value: 'Black' }],
       costPrice: 45.0,
       retailPrice: 129.99,
+      shippingPrice: undefined,
       initialStock: 150,
     },
     {
@@ -68,6 +71,7 @@ export default function AddProductPage() {
       options: [{ name: 'Color', value: 'Silver' }],
       costPrice: 45.0,
       retailPrice: 129.99,
+      shippingPrice: undefined,
       initialStock: 80,
     },
   ]);
@@ -151,6 +155,19 @@ export default function AddProductPage() {
       : 0;
   }, [variants, formData.defaultRetailPrice]);
 
+  // Base shipping price used for calculations
+  const baseShippingPrice = useMemo(() => {
+    if (variants.length > 0) {
+      const firstShipping = variants[0]?.shippingPrice;
+      if (typeof firstShipping === 'number' && !isNaN(firstShipping) && firstShipping > 0) {
+        return firstShipping;
+      }
+    }
+    return typeof formData.defaultShippingPrice === 'number' && !isNaN(formData.defaultShippingPrice) && formData.defaultShippingPrice > 0
+      ? formData.defaultShippingPrice
+      : 0;
+  }, [variants, formData.defaultShippingPrice]);
+
   const toggleChannelSelection = (id: string) => {
     setSelectedChannelIds((prev) =>
       prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
@@ -178,6 +195,7 @@ export default function AddProductPage() {
         options: [{ name: 'Option', value: 'Default' }],
         costPrice: formData.defaultCostPrice || 0,
         retailPrice: formData.defaultRetailPrice || 0,
+        shippingPrice: formData.defaultShippingPrice > 0 ? formData.defaultShippingPrice : undefined,
         initialStock: formData.defaultInitialStock || 50,
       },
     ]);
@@ -286,14 +304,29 @@ export default function AddProductPage() {
     if (!validateForm()) return;
     try {
       setIsSubmittingOnly(true);
-      const cleanVariants = variants.map((v) => ({
-        ...v,
-        retailPrice: typeof v.retailPrice === 'number' && !isNaN(v.retailPrice) && v.retailPrice >= 0.99 ? v.retailPrice : (typeof formData.defaultRetailPrice === 'number' && formData.defaultRetailPrice >= 0.99 ? formData.defaultRetailPrice : 0.99),
-        costPrice: typeof v.costPrice === 'number' && !isNaN(v.costPrice) && v.costPrice >= 0 ? v.costPrice : 0,
-        initialStock: typeof v.initialStock === 'number' && !isNaN(v.initialStock) && v.initialStock >= 0 ? Math.floor(v.initialStock) : 0,
-      }));
+      const cleanVariants = variants.map((v) => {
+        const vShipping = typeof v.shippingPrice === 'number' && !isNaN(v.shippingPrice) && v.shippingPrice > 0
+          ? v.shippingPrice
+          : (typeof formData.defaultShippingPrice === 'number' && !isNaN(formData.defaultShippingPrice) && formData.defaultShippingPrice > 0 ? formData.defaultShippingPrice : 0);
+
+        return {
+          ...v,
+          retailPrice: typeof v.retailPrice === 'number' && !isNaN(v.retailPrice) && v.retailPrice >= 0.99 ? v.retailPrice : (typeof formData.defaultRetailPrice === 'number' && formData.defaultRetailPrice >= 0.99 ? formData.defaultRetailPrice : 0.99),
+          shippingCharge: vShipping,
+          costPrice: typeof v.costPrice === 'number' && !isNaN(v.costPrice) && v.costPrice >= 0 ? v.costPrice : 0,
+          initialStock: typeof v.initialStock === 'number' && !isNaN(v.initialStock) && v.initialStock >= 0 ? Math.floor(v.initialStock) : 0,
+        };
+      });
+
+      const effectiveShipping = typeof formData.defaultShippingPrice === 'number' && !isNaN(formData.defaultShippingPrice) && formData.defaultShippingPrice > 0
+        ? formData.defaultShippingPrice
+        : (cleanVariants[0]?.shippingCharge || 0);
+
       const payload = {
         ...formData,
+        defaultShippingPrice: effectiveShipping,
+        shippingCharge: effectiveShipping,
+        shippingPrice: effectiveShipping,
         defaultInitialStock: Math.floor(formData.defaultInitialStock || 0),
         variants: cleanVariants,
       };
@@ -342,14 +375,29 @@ export default function AddProductPage() {
 
     try {
       // Step 1: Create Canonical Product & Variants
-      const cleanVariants = variants.map((v) => ({
-        ...v,
-        retailPrice: typeof v.retailPrice === 'number' && !isNaN(v.retailPrice) && v.retailPrice >= 0.99 ? v.retailPrice : (typeof formData.defaultRetailPrice === 'number' && formData.defaultRetailPrice >= 0.99 ? formData.defaultRetailPrice : 0.99),
-        costPrice: typeof v.costPrice === 'number' && !isNaN(v.costPrice) && v.costPrice >= 0 ? v.costPrice : 0,
-        initialStock: typeof v.initialStock === 'number' && !isNaN(v.initialStock) && v.initialStock >= 0 ? Math.floor(v.initialStock) : 0,
-      }));
+      const cleanVariants = variants.map((v) => {
+        const vShipping = typeof v.shippingPrice === 'number' && !isNaN(v.shippingPrice) && v.shippingPrice > 0
+          ? v.shippingPrice
+          : (typeof formData.defaultShippingPrice === 'number' && !isNaN(formData.defaultShippingPrice) && formData.defaultShippingPrice > 0 ? formData.defaultShippingPrice : 0);
+
+        return {
+          ...v,
+          retailPrice: typeof v.retailPrice === 'number' && !isNaN(v.retailPrice) && v.retailPrice >= 0.99 ? v.retailPrice : (typeof formData.defaultRetailPrice === 'number' && formData.defaultRetailPrice >= 0.99 ? formData.defaultRetailPrice : 0.99),
+          shippingCharge: vShipping,
+          costPrice: typeof v.costPrice === 'number' && !isNaN(v.costPrice) && v.costPrice >= 0 ? v.costPrice : 0,
+          initialStock: typeof v.initialStock === 'number' && !isNaN(v.initialStock) && v.initialStock >= 0 ? Math.floor(v.initialStock) : 0,
+        };
+      });
+
+      const effectiveShipping = typeof formData.defaultShippingPrice === 'number' && !isNaN(formData.defaultShippingPrice) && formData.defaultShippingPrice > 0
+        ? formData.defaultShippingPrice
+        : (cleanVariants[0]?.shippingCharge || 0);
+
       const payload = {
         ...formData,
+        defaultShippingPrice: effectiveShipping,
+        shippingCharge: effectiveShipping,
+        shippingPrice: effectiveShipping,
         defaultInitialStock: Math.floor(formData.defaultInitialStock || 0),
         variants: cleanVariants,
       };
@@ -388,6 +436,8 @@ export default function AddProductPage() {
             forceRepublish: true,
             markupPercent: feePercent,
             channelMarkups: { [chId]: feePercent },
+            shippingCharge: effectiveShipping,
+            shippingPrice: effectiveShipping,
           });
 
           updatedResults[i] = {
@@ -580,7 +630,7 @@ export default function AddProductPage() {
                     All product variants have been removed. Configure our internal platform price and initial warehouse stock here. Store prices on Shopify or eBay will calculate automatically based on platform charges.
                   </p>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-2">
                     <div>
                       <label className="block text-xs font-semibold text-slate-200">
                         Platform Retail Price ({symbol}) *
@@ -600,6 +650,28 @@ export default function AddProductPage() {
                       />
                       <span className="text-[10px] text-slate-400 mt-1 block">
                         Our platform catalog base price
+                      </span>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-200 flex items-center justify-between">
+                        <span>Shipping Price ({symbol})</span>
+                        <span className="text-[10px] text-cyan-400 font-normal">Optional</span>
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        value={isNaN(formData.defaultShippingPrice) ? '' : formData.defaultShippingPrice}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          setFormData({ ...formData, defaultShippingPrice: isNaN(val) ? 0 : Math.max(0, val) });
+                        }}
+                        placeholder="0.00"
+                        className="mt-1 w-full px-3.5 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-white text-xs font-mono focus:ring-2 focus:ring-cyan-500 outline-none"
+                      />
+                      <span className="text-[10px] text-slate-400 mt-1 block">
+                        Optional shipping charge added to store price
                       </span>
                     </div>
 
@@ -741,9 +813,9 @@ export default function AddProductPage() {
               {variants.map((v, idx) => (
                 <div
                   key={idx}
-                  className="bg-slate-800/50 border border-slate-800 rounded-xl p-4 grid grid-cols-1 md:grid-cols-6 gap-3 items-center"
+                  className="bg-slate-800/50 border border-slate-800 rounded-xl p-4 grid grid-cols-1 md:grid-cols-12 gap-3 items-center"
                 >
-                  <div className="md:col-span-2">
+                  <div className="md:col-span-3">
                     <label className="block text-[10px] font-semibold text-slate-400 uppercase">
                       Variant Title
                     </label>
@@ -756,7 +828,7 @@ export default function AddProductPage() {
                     />
                   </div>
 
-                  <div>
+                  <div className="md:col-span-2">
                     <label className="block text-[10px] font-semibold text-slate-400 uppercase">
                       SKU *
                     </label>
@@ -769,7 +841,7 @@ export default function AddProductPage() {
                     />
                   </div>
 
-                  <div>
+                  <div className="md:col-span-2">
                     <label className="block text-[10px] font-semibold text-slate-400 uppercase">
                       Platform Price ({symbol})
                     </label>
@@ -787,7 +859,26 @@ export default function AddProductPage() {
                     />
                   </div>
 
-                  <div>
+                  <div className="md:col-span-2">
+                    <label className="block text-[10px] font-semibold text-slate-400 uppercase flex items-center justify-between">
+                      <span>Shipping ({symbol})</span>
+                      <span className="text-[9px] text-cyan-400 lowercase">opt</span>
+                    </label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      placeholder={formData.defaultShippingPrice > 0 ? formData.defaultShippingPrice.toFixed(2) : "0.00"}
+                      value={v.shippingPrice !== undefined && !isNaN(v.shippingPrice) ? v.shippingPrice : ''}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        updateVariant(idx, 'shippingPrice', isNaN(val) ? undefined : Math.max(0, val));
+                      }}
+                      className="mt-1 w-full px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-white text-xs font-mono outline-none focus:ring-1 focus:ring-cyan-500"
+                    />
+                  </div>
+
+                  <div className="md:col-span-2">
                     <label className="block text-[10px] font-semibold text-slate-400 uppercase">
                       Initial Stock
                     </label>
@@ -804,7 +895,7 @@ export default function AddProductPage() {
                     />
                   </div>
 
-                  <div className="flex items-end justify-end">
+                  <div className="md:col-span-1 flex items-end justify-end">
                     <button
                       type="button"
                       onClick={() => removeVariant(idx)}
@@ -831,7 +922,7 @@ export default function AddProductPage() {
                 </h3>
               </div>
               <p className="text-xs text-slate-400 mt-1">
-                Select target storefronts. Store prices calculate dynamically by adding each platform&apos;s charges to our Platform Price ({format(basePlatformPrice)}).
+                Select target storefronts. Store prices calculate dynamically by adding each platform&apos;s charges to our Base Price{baseShippingPrice > 0 ? ` + Shipping (${format(basePlatformPrice + baseShippingPrice)})` : ` (${format(basePlatformPrice)})`}.
               </p>
             </div>
 
@@ -890,10 +981,11 @@ export default function AddProductPage() {
                 const isSelected = selectedChannelIds.includes(chId);
                 const badge = getChannelBadge(channel.channelType);
 
-                // Fee & Price calculation
+                // Fee & Price calculation with optional shipping charge
                 const feePercent = channelMarkups[chId] !== undefined ? channelMarkups[chId] : badge.defaultFee;
-                const feeAmount = (basePlatformPrice * feePercent) / 100;
-                const finalStorePrice = Math.round((basePlatformPrice + feeAmount) * 100) / 100;
+                const combinedBasePrice = basePlatformPrice + (baseShippingPrice || 0);
+                const feeAmount = (combinedBasePrice * feePercent) / 100;
+                const finalStorePrice = Math.round((combinedBasePrice + feeAmount) * 100) / 100;
                 const customInputVal = customMarkupInputs[chId] ?? '';
 
                 return (
@@ -1011,6 +1103,17 @@ export default function AddProductPage() {
                             <span>Platform Price:</span>
                             <span className="font-mono text-slate-300">{format(basePlatformPrice)}</span>
                           </div>
+                          {baseShippingPrice > 0 ? (
+                            <div className="flex items-center justify-between text-[10px] text-slate-400">
+                              <span className="text-cyan-400">+ Shipping Charge:</span>
+                              <span className="font-mono text-cyan-400">+{format(baseShippingPrice)}</span>
+                            </div>
+                          ) : (
+                            <div className="flex items-center justify-between text-[10px] text-slate-500">
+                              <span>Shipping Charge:</span>
+                              <span className="font-mono text-slate-500">€0.00 (Free)</span>
+                            </div>
+                          )}
                           <div className="flex items-center justify-between text-[10px] text-slate-400">
                             <span>Platform Fee (+{feePercent}%):</span>
                             <span className="font-mono text-amber-400">+{format(feeAmount)}</span>
@@ -1113,6 +1216,12 @@ export default function AddProductPage() {
                 <span>{variants.length === 0 ? 'Simple Product (0 Variants)' : `${variants.length} Variant(s)`}</span>
                 <span>&bull;</span>
                 <span>Platform Price: <strong className="text-emerald-400">{format(basePlatformPrice)}</strong></span>
+                {baseShippingPrice > 0 && (
+                  <>
+                    <span>&bull;</span>
+                    <span>Shipping: <strong className="text-cyan-400">+{format(baseShippingPrice)}</strong></span>
+                  </>
+                )}
               </div>
             </div>
 
@@ -1128,7 +1237,8 @@ export default function AddProductPage() {
                   const isSelected = selectedChannelIds.includes(chId);
                   const badge = getChannelBadge(channel.channelType);
                   const feePercent = channelMarkups[chId] !== undefined ? channelMarkups[chId] : badge.defaultFee;
-                  const finalPrice = Math.round((basePlatformPrice * (1 + feePercent / 100)) * 100) / 100;
+                  const combinedBase = basePlatformPrice + (baseShippingPrice || 0);
+                  const finalPrice = Math.round((combinedBase * (1 + feePercent / 100)) * 100) / 100;
 
                   return (
                     <div

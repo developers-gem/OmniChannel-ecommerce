@@ -17,7 +17,7 @@ import { logger } from '../utils/logger';
 export class SyncSchedulerService {
   private static timer: NodeJS.Timeout | null = null;
   private static isRunning = false;
-  private static readonly DEFAULT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+  private static readonly DEFAULT_INTERVAL_MS = 30 * 1000; // 30 seconds for live bi-directional sync
 
   /**
    * Start the background bi-directional synchronization scheduler
@@ -31,12 +31,12 @@ export class SyncSchedulerService {
     const intervalMs = parseInt(process.env.SYNC_POLL_INTERVAL_MS || '', 10) || this.DEFAULT_INTERVAL_MS;
     logger.info(`Starting SyncSchedulerService (polling interval: ${intervalMs / 1000}s)`);
 
-    // Initial sync pass 15 seconds after startup
+    // Initial sync pass 5 seconds after startup
     setTimeout(() => {
       this.runSyncCycle().catch((err) =>
         logger.error(`Initial SyncSchedulerService cycle error: ${err.message}`)
       );
-    }, 15000);
+    }, 5000);
 
     // Recurring sync interval
     this.timer = setInterval(() => {
@@ -187,6 +187,27 @@ export class SyncSchedulerService {
   private static async syncShopifyChannel(conn: any) {
     try {
       const { domain, token } = ShopifyService.getCredentials(conn);
+
+      // 1. Inbound sync: Fetch latest products from Shopify and update platform catalog & inventory
+      try {
+        const shopifyProducts = await ShopifyService.fetchAllProducts(domain, token);
+        let inboundCount = 0;
+        for (const prod of shopifyProducts) {
+          const { mappedCount } = await ShopifyService.ingestShopifyProduct({
+            organizationId: conn.organizationId,
+            connection: conn,
+            shopifyProduct: prod,
+          });
+          inboundCount += mappedCount;
+        }
+        if (inboundCount > 0) {
+          logger.debug(`SyncScheduler: Inbound updated ${inboundCount} Shopify products for ${conn.name}`);
+        }
+      } catch (inboundErr: any) {
+        logger.warn(`SyncScheduler: Inbound Shopify sync warning for ${conn.name}: ${inboundErr.message}`);
+      }
+
+      // 2. Outbound sync: Push any pending platform inventory & price changes to Shopify
       const mappings = await ProductMapping.find({
         organizationId: conn.organizationId,
         channelConnectionId: conn._id,
@@ -194,6 +215,8 @@ export class SyncSchedulerService {
       })
         .populate('canonicalVariantId')
         .populate('channelProductId');
+
+      const defaultFee = typeof conn.config?.markupPercent === 'number' ? conn.config.markupPercent : 5;
 
       for (const mapping of mappings) {
         const variant: any = mapping.canonicalVariantId;
@@ -206,10 +229,12 @@ export class SyncSchedulerService {
         });
 
         const currentStock = invItem?.availableToAllocate ?? 0;
-        const currentPrice = variant.retailPrice || 0;
+        const basePrice = typeof variant.retailPrice === 'number' && variant.retailPrice > 0 ? variant.retailPrice : 0;
+        const shipCharge = typeof variant.shippingCharge === 'number' && variant.shippingCharge > 0 ? variant.shippingCharge : 0;
+        const combined = basePrice + shipCharge;
+        const expectedStorePrice = defaultFee > 0 ? Math.round(combined * (1 + defaultFee / 100) * 100) / 100 : combined;
 
         const stockChanged = mapping.syncInventory && chProd.inventoryQuantity !== currentStock;
-        const priceChanged = mapping.syncPrice && currentPrice > 0 && Math.abs(chProd.price - currentPrice) > 0.009;
 
         if (stockChanged && chProd.rawPayload?.variant?.inventory_item_id) {
           await ShopifyService.setInventoryLevel(
@@ -219,14 +244,6 @@ export class SyncSchedulerService {
             currentStock
           );
           chProd.inventoryQuantity = currentStock;
-        }
-
-        if (priceChanged && chProd.externalVariantId) {
-          await ShopifyService.updateVariantPrice(domain, token, chProd.externalVariantId, currentPrice);
-          chProd.price = currentPrice;
-        }
-
-        if (stockChanged || priceChanged) {
           chProd.lastSyncedAt = new Date();
           await chProd.save();
         }

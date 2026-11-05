@@ -170,6 +170,8 @@ export default function ChannelsPage() {
     onSuccess: () => {
       setTimeout(() => {
         queryClient.invalidateQueries({ queryKey: ['channel-connections'] });
+        queryClient.invalidateQueries({ queryKey: ['canonical-products'] });
+        queryClient.invalidateQueries({ queryKey: ['products-summary'] });
         queryClient.invalidateQueries({ queryKey: ['product-mappings'] });
         queryClient.invalidateQueries({ queryKey: ['mapping-suggestions'] });
         setActiveActionId(null);

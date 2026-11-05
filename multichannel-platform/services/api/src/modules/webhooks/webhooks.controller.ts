@@ -494,7 +494,8 @@ export class WebhooksController {
       const productId = String(payload.id);
       if (!productId || !Array.isArray(payload.variants)) return;
 
-      await ShopifyService.ingestShopifyProduct({
+      // Ingest updated attributes (title, description, tags, images, stock) while preserving master base prices
+      const { canonicalProductId } = await ShopifyService.ingestShopifyProduct({
         organizationId: connection.organizationId,
         connection,
         shopifyProduct: payload,
@@ -505,11 +506,11 @@ export class WebhooksController {
         productTitle: payload.title || `Product #${productId}`,
         source: `Shopify (${connection.name || 'Store'})`,
         channelType: ChannelType.SHOPIFY,
-        changesSummary: `Updated variants and catalog mapping data.`,
-        link: '/mappings',
+        changesSummary: `Synchronized product updates and stock levels from Shopify.`,
+        link: '/products',
       });
 
-      logger.info(`Updated channel listings for Shopify product ${productId} from webhook`);
+      logger.info(`Synchronized Shopify product ${productId} updates to platform catalog via webhook`);
     } catch (err: any) {
       logger.error('Failed to process Shopify product webhook:', err);
     }

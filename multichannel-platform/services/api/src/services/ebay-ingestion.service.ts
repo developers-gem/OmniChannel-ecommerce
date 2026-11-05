@@ -207,9 +207,10 @@ export class EbayIngestionService {
       isNewProduct = true;
       logger.info(`[eBay Ingestion] Created new CanonicalProduct "${title}" (SKU: ${cleanSku})`);
     } else {
-      // Sync price, description, or images if canonical product had empty fields or updated price from eBay
+      // Sync description, or images if canonical product had empty fields
       let canonicalChanged = false;
-      if (price > 0 && canonicalProduct.defaultRetailPrice !== price) {
+      // Preserve Master Base Retail Price. Do not overwrite existing platform base price with eBay store price.
+      if ((!canonicalProduct.defaultRetailPrice || canonicalProduct.defaultRetailPrice <= 0) && price > 0) {
         canonicalProduct.defaultRetailPrice = price;
         canonicalChanged = true;
       }
@@ -256,7 +257,8 @@ export class EbayIngestionService {
       logger.info(`[eBay Ingestion] Created ProductVariant for SKU ${cleanSku}`);
     } else {
       let varChanged = false;
-      if (price > 0 && variant.retailPrice !== price) {
+      // Preserve Variant Base Retail Price. Do not overwrite existing platform base price with eBay store price.
+      if ((!variant.retailPrice || variant.retailPrice <= 0) && price > 0) {
         variant.retailPrice = price;
         varChanged = true;
       }

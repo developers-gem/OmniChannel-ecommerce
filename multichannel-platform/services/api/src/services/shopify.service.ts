@@ -460,15 +460,21 @@ export class ShopifyService {
     let canonicalProduct: any = null;
 
     // 0. Check if this Shopify product was already mapped to a Canonical Product
-    const existingChannelProduct = await ChannelProduct.findOne({
+    const existingChannelProducts = await ChannelProduct.find({
       organizationId,
       channelConnectionId: connection._id,
-      externalProductId: productId,
+      $or: [
+        { externalProductId: productId },
+        { externalListingId: productId },
+        ...(variants.map((v: any) => ({ externalVariantId: String(v.id) }))),
+      ],
     });
-    if (existingChannelProduct) {
+
+    if (existingChannelProducts.length > 0) {
+      const channelProductIds = existingChannelProducts.map((cp) => cp._id);
       const mapping = await ProductMapping.findOne({
         organizationId,
-        channelProductId: existingChannelProduct._id,
+        channelProductId: { $in: channelProductIds },
       });
       if (mapping?.canonicalProductId) {
         canonicalProduct = await CanonicalProduct.findOne({
@@ -478,22 +484,27 @@ export class ShopifyService {
       }
     }
 
-    // Check if canonical product already exists for this master SKU
+    // Check if canonical product already exists for any variant SKU
     const primarySku = (variants[0]?.sku && variants[0].sku.trim()) || `SHOPIFY-${productId}`;
     const cleanPrimarySku = primarySku.toUpperCase();
 
-    // 1. Try to find existing canonical product by SKU or title if not found via mapping
+    // 1. Try to find existing canonical product by variant SKUs if not found via mapping
     if (!canonicalProduct) {
-      const existingVariant = await ProductVariant.findOne({
-        organizationId,
-        sku: cleanPrimarySku,
-      });
-
-      if (existingVariant) {
-        canonicalProduct = await CanonicalProduct.findOne({
-          _id: existingVariant.canonicalProductId,
-          organizationId,
-        });
+      for (const v of variants) {
+        const sku = (v.sku && v.sku.trim()) || '';
+        if (sku) {
+          const existingVariant = await ProductVariant.findOne({
+            organizationId,
+            sku: sku.toUpperCase(),
+          });
+          if (existingVariant) {
+            canonicalProduct = await CanonicalProduct.findOne({
+              _id: existingVariant.canonicalProductId,
+              organizationId,
+            });
+            if (canonicalProduct) break;
+          }
+        }
       }
     }
 
@@ -551,8 +562,9 @@ export class ShopifyService {
       if (shopifyProduct.product_type) {
         canonicalProduct.category = shopifyProduct.product_type;
       }
-      if (variants[0]?.price) {
-        canonicalProduct.defaultRetailPrice = parseFloat(variants[0].price) || canonicalProduct.defaultRetailPrice;
+      // Preserve Master Base Retail Price. Do not overwrite existing platform base price with Shopify store price.
+      if ((!canonicalProduct.defaultRetailPrice || canonicalProduct.defaultRetailPrice <= 0) && variants[0]?.price) {
+        canonicalProduct.defaultRetailPrice = parseFloat(variants[0].price) || 0;
       }
       if (images.length > 0) {
         canonicalProduct.images = images;
@@ -618,6 +630,17 @@ export class ShopifyService {
         });
       }
 
+      // If still not matched and both canonical product and shopify have 1 variant, resolve to existing variant
+      if (!canonicalVariant && variants.length === 1) {
+        const existingVariants = await ProductVariant.find({
+          organizationId,
+          canonicalProductId: canonicalProduct._id,
+        });
+        if (existingVariants.length === 1) {
+          canonicalVariant = existingVariants[0];
+        }
+      }
+
       if (!canonicalVariant) {
         canonicalVariant = await ProductVariant.create({
           organizationId,
@@ -631,8 +654,11 @@ export class ShopifyService {
           weight: typeof v.weight === 'number' ? v.weight : 0,
         });
       } else {
-        // Synchronize updated price and properties from Shopify to Canonical Variant
-        canonicalVariant.retailPrice = price;
+        // Synchronize updated properties from Shopify to Canonical Variant
+        // Preserve Variant Base Retail Price. Do not overwrite existing platform base price with Shopify store price.
+        if ((!canonicalVariant.retailPrice || canonicalVariant.retailPrice <= 0) && price > 0) {
+          canonicalVariant.retailPrice = price;
+        }
         if (v.barcode) canonicalVariant.barcode = v.barcode;
         if (v.title && v.title !== 'Default Title') canonicalVariant.title = v.title;
         if (typeof v.weight === 'number') canonicalVariant.weight = v.weight;
