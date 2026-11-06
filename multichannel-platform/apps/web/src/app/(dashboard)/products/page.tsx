@@ -30,6 +30,8 @@ import {
   AlertTriangle,
   Loader2,
   Info,
+  Percent,
+  Store,
 } from 'lucide-react';
 import { useCurrency } from '@/lib/currency';
 import { ZeroMappedModal } from '@/components/products/ZeroMappedModal';
@@ -127,6 +129,9 @@ export default function ProductsPage() {
   // Push to Channel Modal states
   const [pushModalProduct, setPushModalProduct] = useState<any | null>(null);
   const [pushingChannelId, setPushingChannelId] = useState<string | null>(null);
+  const [selectedPushChannelIds, setSelectedPushChannelIds] = useState<string[]>([]);
+  const [pushChannelMarkups, setPushChannelMarkups] = useState<Record<string, number>>({});
+  const [customPushMarkupInputs, setCustomPushMarkupInputs] = useState<Record<string, string>>({});
   const [confirmRepublishTarget, setConfirmRepublishTarget] = useState<{
     productId: string;
     productTitle: string;
@@ -206,17 +211,23 @@ export default function ProductsPage() {
     mutationFn: async ({
       id,
       channelConnectionId,
+      channelConnectionIds,
+      channelMarkups,
       forceRepublish = false,
     }: {
       id: string;
       channelConnectionId?: string;
+      channelConnectionIds?: string[];
+      channelMarkups?: Record<string, number>;
       forceRepublish?: boolean;
     }) => {
       setPublishingId(id);
-      setPushingChannelId(channelConnectionId || 'all');
+      setPushingChannelId(channelConnectionId || (channelConnectionIds && channelConnectionIds.length > 0 ? 'bulk' : 'all'));
       setNotification(null);
       const res: any = await api.post(`/products/${id}/publish`, {
         channelConnectionId,
+        channelConnectionIds,
+        channelMarkups,
         forceRepublish,
         shippingCharge: pushModalProduct?.shippingCharge || 0,
       });
@@ -361,20 +372,63 @@ export default function ProductsPage() {
           label: 'Shopify',
           icon: '🛍️',
           bg: 'bg-emerald-950/80 text-emerald-400 border-emerald-800/80',
+          borderActive: 'border-emerald-500 bg-emerald-950/20 shadow-emerald-500/10',
+          defaultFee: 5,
         };
       case 'EBAY':
         return {
           label: 'eBay',
           icon: '🏷️',
           bg: 'bg-amber-950/80 text-amber-400 border-amber-800/80',
+          borderActive: 'border-amber-500 bg-amber-950/20 shadow-amber-500/10',
+          defaultFee: 15,
+        };
+      case 'AMAZON':
+        return {
+          label: 'Amazon',
+          icon: '📦',
+          bg: 'bg-yellow-950/80 text-yellow-400 border-yellow-800/80',
+          borderActive: 'border-yellow-500 bg-yellow-950/20 shadow-yellow-500/10',
+          defaultFee: 15,
         };
       default:
         return {
           label: 'Custom Store',
           icon: '🌐',
           bg: 'bg-purple-950/80 text-purple-400 border-purple-800/80',
+          borderActive: 'border-purple-500 bg-purple-950/20 shadow-purple-500/10',
+          defaultFee: 10,
         };
     }
+  };
+
+  const openPushModal = (prod: any) => {
+    setPushModalProduct(prod);
+    const channelIds = activeChannels.map((c: any) => c._id?._id || c._id?.id || c._id);
+    setSelectedPushChannelIds(channelIds);
+
+    const initialMarkups: Record<string, number> = {};
+    for (const c of activeChannels) {
+      const chId = c._id?._id || c._id?.id || c._id;
+      const badge = getChannelBadge(c.channelType);
+      initialMarkups[chId] = badge.defaultFee;
+    }
+    setPushChannelMarkups(initialMarkups);
+    setCustomPushMarkupInputs({});
+  };
+
+  const togglePushChannelSelection = (chId: string) => {
+    setSelectedPushChannelIds((prev) =>
+      prev.includes(chId) ? prev.filter((id) => id !== chId) : [...prev, chId]
+    );
+  };
+
+  const selectAllPushChannels = () => {
+    setSelectedPushChannelIds(activeChannels.map((c: any) => c._id?._id || c._id?.id || c._id));
+  };
+
+  const deselectAllPushChannels = () => {
+    setSelectedPushChannelIds([]);
   };
 
   const handleExportCsv = async () => {
@@ -1024,7 +1078,7 @@ export default function ProductsPage() {
                           {(pMappings.length || p.mappedCount || 0) === 0 ? (
                             <button
                               type="button"
-                              onClick={() => setPushModalProduct(p)}
+                              onClick={() => openPushModal(p)}
                               className="bg-red-950/80 hover:bg-red-900/80 text-red-300 border border-red-800/80 px-2 py-0.5 rounded text-[10px] font-bold flex items-center gap-1 cursor-pointer transition shadow-sm"
                               title="0 Mapped: Click to push and map this product to Shopify or eBay"
                             >
@@ -1068,7 +1122,7 @@ export default function ProductsPage() {
                         <div className="flex items-center justify-end gap-1.5">
                           {/* Push / Publish to Channels Button */}
                           <button
-                            onClick={() => setPushModalProduct(p)}
+                            onClick={() => openPushModal(p)}
                             title="Push / Publish to Channels (Shopify, eBay)"
                             className="flex items-center gap-1.5 px-2.5 py-1.5 bg-brand-600/20 hover:bg-brand-600 text-brand-300 hover:text-white rounded-lg border border-brand-500/30 transition text-[11px] font-semibold cursor-pointer"
                           >
@@ -1386,139 +1440,260 @@ export default function ProductsPage() {
         </div>
       )}
 
-      {/* MODAL 3: Push Product to Sales Channels Modal */}
+      {/* MODAL 3: Push Product to Sales Channels Modal with Dynamic Platform Charges & Live Breakdown */}
       {pushModalProduct && (
         <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-xl w-full p-6 shadow-2xl relative">
-            <div className="flex items-start justify-between gap-4 mb-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-4xl w-full p-6 shadow-2xl relative max-h-[90vh] flex flex-col">
+            {/* Modal Header */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800">
               <div>
                 <h3 className="text-lg font-bold text-white flex items-center gap-2">
                   <Share2 className="w-5 h-5 text-brand-400" />
                   <span>Push Product to Sales Channels</span>
                 </h3>
                 <p className="text-xs text-slate-400 mt-1">
-                  Choose which sales channel and store to push and map this product to.
+                  Select target storefronts. Store prices calculate dynamically by adding each platform&apos;s charges to our Base Price + Shipping.
                 </p>
               </div>
-              <button
-                onClick={() => setPushModalProduct(null)}
-                className="text-slate-500 hover:text-white text-lg font-bold p-1 rounded-lg transition"
-              >
-                &times;
-              </button>
+
+              <div className="flex items-center gap-2 shrink-0">
+                {activeChannels.length > 0 && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={selectAllPushChannels}
+                      className="text-[11px] font-semibold text-brand-400 hover:text-brand-300 px-2.5 py-1 rounded-lg bg-brand-950/40 border border-brand-800/50 transition cursor-pointer"
+                    >
+                      Select All
+                    </button>
+                    <button
+                      type="button"
+                      onClick={deselectAllPushChannels}
+                      className="text-[11px] font-semibold text-slate-400 hover:text-slate-300 px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 transition cursor-pointer"
+                    >
+                      Clear All
+                    </button>
+                  </>
+                )}
+                <button
+                  onClick={() => setPushModalProduct(null)}
+                  className="text-slate-500 hover:text-white text-lg font-bold p-1 rounded-lg transition ml-2 cursor-pointer"
+                >
+                  &times;
+                </button>
+              </div>
             </div>
 
             {/* Selected Product Card */}
-            <div className="bg-slate-800/80 border border-slate-700/80 rounded-xl p-3.5 mb-4">
-              <span className="text-[10px] text-brand-400 font-mono uppercase font-bold tracking-wider">
-                Selected Canonical Product
-              </span>
-              <div className="text-sm font-bold text-white mt-0.5">{pushModalProduct.title}</div>
-              <div className="flex flex-wrap items-center gap-3 mt-1.5 text-xs text-slate-300 font-mono">
-                <span>SKU: <strong className="text-white">{pushModalProduct.masterSku}</strong></span>
-                <span>&bull;</span>
-                <span>Retail: <strong className="text-emerald-400">{format(pushModalProduct.defaultRetailPrice)}</strong></span>
-                {typeof pushModalProduct.shippingCharge === 'number' && pushModalProduct.shippingCharge > 0 && (
-                  <>
+            {(() => {
+              const basePrice = typeof pushModalProduct.defaultRetailPrice === 'number' && !isNaN(pushModalProduct.defaultRetailPrice) && pushModalProduct.defaultRetailPrice > 0
+                ? pushModalProduct.defaultRetailPrice
+                : (pushModalProduct.variants?.[0]?.retailPrice || 0);
+
+              const baseShipping = typeof pushModalProduct.shippingCharge === 'number' && !isNaN(pushModalProduct.shippingCharge) && pushModalProduct.shippingCharge > 0
+                ? pushModalProduct.shippingCharge
+                : (pushModalProduct.variants?.[0]?.shippingCharge || 0);
+
+              return (
+                <div className="bg-slate-800/80 border border-slate-700/80 rounded-xl p-3.5 my-3 shrink-0">
+                  <span className="text-[10px] text-brand-400 font-mono uppercase font-bold tracking-wider">
+                    Selected Canonical Product (Master Base)
+                  </span>
+                  <div className="text-sm font-bold text-white mt-0.5">{pushModalProduct.title}</div>
+                  <div className="flex flex-wrap items-center gap-3 mt-1.5 text-xs text-slate-300 font-mono">
+                    <span>SKU: <strong className="text-white">{pushModalProduct.masterSku}</strong></span>
                     <span>&bull;</span>
-                    <span>Shipping: <strong className="text-cyan-400">+{format(pushModalProduct.shippingCharge)}</strong></span>
-                  </>
-                )}
-                <span>&bull;</span>
-                <span>Stock: <strong className="text-white">{pushModalProduct.totalStock ?? 0} units</strong></span>
-              </div>
-            </div>
+                    <span>Platform Price: <strong className="text-emerald-400">{format(basePrice)}</strong></span>
+                    <span>&bull;</span>
+                    <span>Shipping: <strong className={baseShipping > 0 ? "text-cyan-400" : "text-slate-400"}>{baseShipping > 0 ? `+${format(baseShipping)}` : '€0.00 (Free)'}</strong></span>
+                    <span>&bull;</span>
+                    <span>Stock: <strong className="text-white">{pushModalProduct.totalStock ?? 0} units</strong></span>
+                  </div>
+                </div>
+              );
+            })()}
 
-            {/* Channels List */}
-            <div className="space-y-3 max-h-[50vh] overflow-y-auto pr-1">
+            {/* Channels Grid with Platform Charges and Price Breakdown */}
+            <div className="overflow-y-auto pr-1 flex-1 py-1">
               {activeChannels.length > 0 ? (
-                activeChannels.map((channel: any) => {
-                  const chId = channel._id?._id || channel._id?.id || channel._id;
-                  const isCurPushing =
-                    publishingId === pushModalProduct._id && pushingChannelId === chId;
-                  const badge = getChannelBadge(channel.channelType);
-                  const channelMappings = getProductMappingsForChannel(pushModalProduct._id, chId);
-                  const isAlreadyMapped = channelMappings.length > 0;
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-4">
+                  {activeChannels.map((channel: any) => {
+                    const chId = channel._id?._id || channel._id?.id || channel._id;
+                    const isSelected = selectedPushChannelIds.includes(chId);
+                    const badge = getChannelBadge(channel.channelType);
+                    const channelMappings = getProductMappingsForChannel(pushModalProduct._id, chId);
+                    const isAlreadyMapped = channelMappings.length > 0;
 
-                  return (
-                    <div
-                      key={chId}
-                      className="bg-slate-800/60 border border-slate-700/60 hover:border-slate-600 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition"
-                    >
-                      <div className="flex items-start gap-3">
-                        <div className="text-2xl pt-0.5">{badge.icon}</div>
+                    const basePrice = typeof pushModalProduct.defaultRetailPrice === 'number' && !isNaN(pushModalProduct.defaultRetailPrice) && pushModalProduct.defaultRetailPrice > 0
+                      ? pushModalProduct.defaultRetailPrice
+                      : (pushModalProduct.variants?.[0]?.retailPrice || 0);
+
+                    const baseShipping = typeof pushModalProduct.shippingCharge === 'number' && !isNaN(pushModalProduct.shippingCharge) && pushModalProduct.shippingCharge > 0
+                      ? pushModalProduct.shippingCharge
+                      : (pushModalProduct.variants?.[0]?.shippingCharge || 0);
+
+                    const feePercent = pushChannelMarkups[chId] !== undefined ? pushChannelMarkups[chId] : badge.defaultFee;
+                    const combinedBasePrice = basePrice + (baseShipping || 0);
+                    const feeAmount = (combinedBasePrice * feePercent) / 100;
+                    const finalStorePrice = Math.round((combinedBasePrice + feeAmount) * 100) / 100;
+                    const customInputVal = customPushMarkupInputs[chId] ?? '';
+
+                    return (
+                      <div
+                        key={chId}
+                        onClick={() => togglePushChannelSelection(chId)}
+                        className={`rounded-2xl p-4 border transition select-none flex flex-col justify-between cursor-pointer ${
+                          isSelected
+                            ? `${badge.borderActive} shadow-lg border-2`
+                            : 'bg-slate-800/40 border-slate-800 opacity-75 hover:opacity-100 hover:border-slate-700'
+                        }`}
+                      >
                         <div>
-                          <div className="flex items-center gap-2">
-                            <span className="font-semibold text-slate-200 text-sm">
-                              {channel.name}
-                            </span>
-                            <span
-                              className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${badge.bg}`}
+                          {/* Store Header */}
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xl">{badge.icon}</span>
+                              <span className="font-bold text-slate-200 text-sm line-clamp-1">
+                                {channel.name}
+                              </span>
+                            </div>
+                            <div
+                              className={`w-5 h-5 rounded-md flex items-center justify-center border transition ${
+                                isSelected
+                                  ? 'bg-brand-600 border-brand-500 text-white'
+                                  : 'bg-slate-800 border-slate-700 text-transparent'
+                              }`}
                             >
+                              <Check className="w-3.5 h-3.5" />
+                            </div>
+                          </div>
+
+                          <div className="mt-2 flex items-center gap-2">
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${badge.bg}`}>
                               {badge.label}
                             </span>
-                          </div>
-                          <span className="text-[11px] text-slate-400 font-mono mt-0.5 block">
-                            {channel.config?.storeDomain ||
-                              channel.config?.baseUrl ||
-                              channel.channelType}
-                          </span>
-
-                          <div className="mt-1.5 flex items-center gap-1.5">
-                            {isAlreadyMapped ? (
-                              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-400 bg-emerald-950/60 border border-emerald-800/60 px-2 py-0.5 rounded-md">
-                                <Check className="w-3 h-3" />
-                                <span>Already Mapped ({channelMappings.length} listing)</span>
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 text-[11px] text-slate-400 bg-slate-800 px-2 py-0.5 rounded-md">
-                                Not Mapped Yet
+                            <span className="text-[10px] text-emerald-400 flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                              <span>Active</span>
+                            </span>
+                            {isAlreadyMapped && (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-400 bg-emerald-950/60 border border-emerald-800/60 px-2 py-0.5 rounded-md ml-auto">
+                                <Check className="w-2.5 h-2.5" />
+                                <span>Already Mapped</span>
                               </span>
                             )}
                           </div>
+
+                          <div className="text-[11px] text-slate-400 font-mono mt-2 truncate">
+                            {channel.config?.storeDomain ||
+                              channel.config?.baseUrl ||
+                              channel.name}
+                          </div>
+
+                          {/* PLATFORM CHARGES & FINAL PRICE CALCULATION BOX */}
+                          <div
+                            className="mt-3.5 p-3 bg-slate-900/90 border border-slate-800/90 rounded-xl space-y-2.5"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <div className="flex items-center justify-between text-[11px]">
+                              <span className="font-bold text-slate-300 uppercase tracking-wider text-[10px] flex items-center gap-1">
+                                <Percent className="w-3 h-3 text-brand-400" />
+                                <span>% Platform Charges</span>
+                              </span>
+                              <span className="font-mono font-bold text-brand-400">
+                                +{feePercent}%
+                              </span>
+                            </div>
+
+                            {/* Charges Presets (0%, 5%, 10%, 12%, 15%, Custom) */}
+                            <div className="flex flex-wrap items-center gap-1">
+                              {[0, 5, 10, 12, 15].map((preset) => {
+                                const isCurrent = feePercent === preset && customInputVal === '';
+                                return (
+                                  <button
+                                    key={preset}
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setPushChannelMarkups((prev) => ({ ...prev, [chId]: preset }));
+                                      setCustomPushMarkupInputs((prev) => ({ ...prev, [chId]: '' }));
+                                    }}
+                                    className={`px-2 py-0.5 rounded text-[10px] font-bold border transition cursor-pointer ${
+                                      isCurrent
+                                        ? 'bg-brand-600 border-brand-500 text-white shadow-sm'
+                                        : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-white'
+                                    }`}
+                                  >
+                                    {preset}%
+                                  </button>
+                                );
+                              })}
+
+                              {/* Custom % input */}
+                              <div className="flex items-center gap-1 ml-auto">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="100"
+                                  step="0.5"
+                                  placeholder="Custom"
+                                  value={customInputVal}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    setCustomPushMarkupInputs((prev) => ({ ...prev, [chId]: val }));
+                                    const parsed = parseFloat(val);
+                                    if (!isNaN(parsed) && parsed >= 0) {
+                                      setPushChannelMarkups((prev) => ({ ...prev, [chId]: parsed }));
+                                    }
+                                  }}
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="w-16 px-1.5 py-0.5 rounded text-[10px] font-mono bg-slate-800 border border-slate-700 text-white placeholder-slate-500 outline-none focus:border-brand-500"
+                                />
+                                <span className="text-[10px] text-slate-400">%</span>
+                              </div>
+                            </div>
+
+                            {/* Live Price Breakdown */}
+                            <div className="pt-2 border-t border-slate-800/80 space-y-1">
+                              <div className="flex items-center justify-between text-[10px] text-slate-400">
+                                <span>Platform Price:</span>
+                                <span className="font-mono text-slate-300">{format(basePrice)}</span>
+                              </div>
+                              {baseShipping > 0 ? (
+                                <div className="flex items-center justify-between text-[10px] text-slate-400">
+                                  <span className="text-cyan-400">+ Shipping Charge:</span>
+                                  <span className="font-mono text-cyan-400">+{format(baseShipping)}</span>
+                                </div>
+                              ) : (
+                                <div className="flex items-center justify-between text-[10px] text-slate-500">
+                                  <span>Shipping Charge:</span>
+                                  <span className="font-mono text-slate-500">€0.00 (Free)</span>
+                                </div>
+                              )}
+                              <div className="flex items-center justify-between text-[10px] text-slate-400">
+                                <span>Platform Fee (+{feePercent}%):</span>
+                                <span className="font-mono text-amber-400">+{format(feeAmount)}</span>
+                              </div>
+                              <div className="flex items-center justify-between text-xs pt-1 border-t border-slate-800/60">
+                                <span className="font-bold text-white">Final Store Price:</span>
+                                <span className="font-mono font-extrabold text-emerald-400 text-sm">
+                                  {format(finalStorePrice)}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 pt-2.5 border-t border-slate-800/80 flex items-center justify-between text-[11px]">
+                          <span className="text-slate-500">Auto-Sync</span>
+                          <span className={isSelected ? 'text-brand-400 font-semibold' : 'text-slate-500'}>
+                            {isSelected ? 'Ready to Push' : 'Skip Channel'}
+                          </span>
                         </div>
                       </div>
-
-                      <button
-                        onClick={() => {
-                          if (isAlreadyMapped) {
-                            // Prompt confirmation to prevent redundant mapping
-                            setConfirmRepublishTarget({
-                              productId: pushModalProduct._id,
-                              productTitle: pushModalProduct.title,
-                              channelId: chId,
-                              channelName: channel.name,
-                              channelType: channel.channelType,
-                            });
-                          } else {
-                            publishMutation.mutate({
-                              id: pushModalProduct._id,
-                              channelConnectionId: chId,
-                              forceRepublish: false,
-                            });
-                          }
-                        }}
-                        disabled={publishingId === pushModalProduct._id}
-                        className={`flex items-center gap-2 text-xs font-semibold px-4 py-2.5 rounded-xl shadow-lg transition disabled:opacity-50 shrink-0 justify-center cursor-pointer ${
-                          isAlreadyMapped
-                            ? 'bg-amber-600/90 hover:bg-amber-500 text-white shadow-amber-600/20'
-                            : 'bg-brand-600 hover:bg-brand-500 text-white shadow-brand-600/20'
-                        }`}
-                      >
-                        <UploadCloud
-                          className={`w-3.5 h-3.5 ${isCurPushing ? 'animate-bounce' : ''}`}
-                        />
-                        <span>
-                          {isCurPushing
-                            ? 'Pushing...'
-                            : isAlreadyMapped
-                            ? 'Push Again'
-                            : 'Push to Store'}
-                        </span>
-                      </button>
-                    </div>
-                  );
-                })
+                    );
+                  })}
+                </div>
               ) : (
                 <div className="bg-slate-800/40 border border-slate-700/60 rounded-xl p-8 text-center">
                   <p className="text-xs text-slate-400 mb-3">No active storefronts connected yet.</p>
@@ -1532,14 +1707,51 @@ export default function ProductsPage() {
               )}
             </div>
 
-            <div className="flex justify-end pt-4 mt-4 border-t border-slate-800">
-              <button
-                type="button"
-                onClick={() => setPushModalProduct(null)}
-                className="px-4 py-2 rounded-xl text-xs text-slate-400 hover:text-white transition cursor-pointer"
-              >
-                Close
-              </button>
+            {/* Modal Footer with Action Buttons */}
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 mt-2 border-t border-slate-800 shrink-0">
+              <div className="text-xs text-slate-400">
+                {selectedPushChannelIds.length > 0 ? (
+                  <span>Ready to push to <strong className="text-white">{selectedPushChannelIds.length}</strong> channel storefront{selectedPushChannelIds.length > 1 ? 's' : ''}. Master Catalog prices remain safe and untouched.</span>
+                ) : (
+                  <span className="text-amber-400">Select at least one sales channel to push.</span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2.5 w-full sm:w-auto justify-end">
+                <button
+                  type="button"
+                  onClick={() => setPushModalProduct(null)}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (selectedPushChannelIds.length === 0) return;
+                    publishMutation.mutate({
+                      id: pushModalProduct._id,
+                      channelConnectionIds: selectedPushChannelIds,
+                      channelMarkups: pushChannelMarkups,
+                      forceRepublish: true,
+                    });
+                  }}
+                  disabled={selectedPushChannelIds.length === 0 || publishingId === pushModalProduct._id}
+                  className="flex items-center gap-2 text-xs font-bold px-5 py-2.5 rounded-xl shadow-lg bg-brand-600 hover:bg-brand-500 text-white shadow-brand-600/20 transition cursor-pointer disabled:opacity-50"
+                >
+                  {publishingId === pushModalProduct._id ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Pushing to Channels...</span>
+                    </>
+                  ) : (
+                    <>
+                      <UploadCloud className="w-4 h-4" />
+                      <span>Push to Channels ({selectedPushChannelIds.length})</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </div>

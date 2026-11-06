@@ -1425,6 +1425,10 @@ export class ProductsController {
                       mappingConfidence: MappingConfidence.EXACT_SKU,
                       syncPrice: true,
                       syncInventory: true,
+                      priceModifier: {
+                        type: 'PERCENTAGE',
+                        value: feePercent,
+                      },
                       status: MappingStatus.MAPPED,
                     },
                     $unset: {
@@ -1608,6 +1612,10 @@ export class ProductsController {
                     mappingConfidence: MappingConfidence.EXACT_SKU,
                     syncPrice: true,
                     syncInventory: true,
+                    priceModifier: {
+                      type: 'PERCENTAGE',
+                      value: feePercent,
+                    },
                     status: MappingStatus.MAPPED,
                     updatedAt: new Date(),
                   },
@@ -1727,6 +1735,10 @@ export class ProductsController {
                     mappingConfidence: MappingConfidence.EXACT_SKU,
                     syncPrice: true,
                     syncInventory: true,
+                    priceModifier: {
+                      type: 'PERCENTAGE',
+                      value: feePercent,
+                    },
                     status: MappingStatus.MAPPED,
                     updatedAt: new Date(),
                   },
@@ -1852,6 +1864,7 @@ export class ProductsController {
             params: { id: task.productId },
             body: {
               channelConnectionIds: task.targetChannelIds,
+              channelMarkups: req.body.channelMarkups,
               forceRepublish,
             },
             tenantId: req.tenantId,
