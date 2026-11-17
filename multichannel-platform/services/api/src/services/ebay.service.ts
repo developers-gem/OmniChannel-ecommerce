@@ -1292,6 +1292,7 @@ export class EbayService {
       quantity?: number;
       price?: number;
       siteId?: string;
+      currency?: string;
     }
   ): Promise<boolean> {
     const isSandbox = host.includes('sandbox');
@@ -1299,14 +1300,31 @@ export class EbayService {
       ? 'https://api.sandbox.ebay.com/ws/api.dll'
       : 'https://api.ebay.com/ws/api.dll';
 
-    const { listingId, sku, quantity, price, siteId = '3' } = params;
+    const { listingId, sku, quantity, price, siteId = '3', currency } = params;
     if (!listingId && !sku) return false;
 
+    const resolvedCurrency = currency || (siteId === '3' ? 'GBP' : (siteId === '77' ? 'EUR' : 'USD'));
+
+    // Construct inventory status XML.
+    // If listingId is a standard eBay numeric ItemID (e.g. 110558482939), use ItemID alone to prevent SKU mismatch errors.
+    const isNumericItemId = listingId && /^\d+$/.test(listingId.trim());
+
     let itemXml = '<InventoryStatus>';
-    if (listingId) itemXml += `<ItemID>${listingId}</ItemID>`;
-    if (sku) itemXml += `<SKU>${sku}</SKU>`;
-    if (typeof quantity === 'number') itemXml += `<Quantity>${Math.max(0, quantity)}</Quantity>`;
-    if (typeof price === 'number' && price > 0) itemXml += `<StartPrice>${price.toFixed(2)}</StartPrice>`;
+    if (isNumericItemId) {
+      itemXml += `<ItemID>${listingId.trim()}</ItemID>`;
+    } else if (sku) {
+      itemXml += `<SKU>${sku.trim()}</SKU>`;
+      if (listingId) itemXml += `<ItemID>${listingId.trim()}</ItemID>`;
+    } else if (listingId) {
+      itemXml += `<ItemID>${listingId.trim()}</ItemID>`;
+    }
+
+    if (typeof quantity === 'number') {
+      itemXml += `<Quantity>${Math.max(0, quantity)}</Quantity>`;
+    }
+    if (typeof price === 'number' && price > 0) {
+      itemXml += `<StartPrice currencyID="${resolvedCurrency}">${price.toFixed(2)}</StartPrice>`;
+    }
     itemXml += '</InventoryStatus>';
 
     const xmlRequest = `<?xml version="1.0" encoding="utf-8"?>
@@ -1327,14 +1345,111 @@ export class EbayService {
       });
 
       const xml = response.data;
-      if (typeof xml === 'string' && (xml.includes('<Ack>Success</Ack>') || xml.includes('<Ack>Warning</Ack>'))) {
-        logger.info(`[eBay Trading API] Successfully revised inventory status for SKU ${sku || 'N/A'} (ItemID: ${listingId || 'N/A'})`);
-        return true;
+      if (typeof xml === 'string') {
+        if (xml.includes('<Ack>Success</Ack>') || xml.includes('<Ack>Warning</Ack>')) {
+          logger.info(`[eBay Trading API] Successfully revised inventory status for SKU ${sku || 'N/A'} (ItemID: ${listingId || 'N/A'}, Qty: ${quantity}, Price: ${price} ${resolvedCurrency})`);
+          return true;
+        }
+
+        const match = xml.match(/<LongMessage>(.*?)<\/LongMessage>/i) || xml.match(/<ShortMessage>(.*?)<\/ShortMessage>/i);
+        const errMsg = match ? match[1] : 'eBay Trading API returned failure status';
+        logger.warn(`[eBay Trading API] ReviseInventoryStatus rejected for ItemID ${listingId || 'N/A'} (SKU ${sku || 'N/A'}): ${errMsg}`);
       }
       return false;
     } catch (err: any) {
-      logger.warn(`[eBay Trading API] ReviseInventoryStatus failed for SKU ${sku || 'N/A'}: ${err.message}`);
+      logger.warn(`[eBay Trading API] ReviseInventoryStatus network error for SKU ${sku || 'N/A'}: ${err.message}`);
       return false;
+    }
+  }
+
+  /**
+   * Dedicated fast price & inventory update on eBay.
+   * Directly uses Trading API ReviseInventoryStatus without requiring business policies.
+   */
+  static async updatePriceAndInventory(
+    host: string,
+    token: string,
+    params: {
+      sku: string;
+      listingId?: string;
+      quantity?: number;
+      price?: number;
+      marketplaceId?: string;
+      siteId?: string;
+      currency?: string;
+    }
+  ): Promise<{ success: boolean; listingId?: string; error?: string }> {
+    const { sku, listingId, quantity, price, marketplaceId = 'EBAY_GB', siteId, currency } = params;
+    const resolved = this.resolveMarketplace(marketplaceId);
+    const activeSiteId = siteId || resolved.siteId;
+    const activeCurrency = currency || resolved.currency;
+
+    const effectivePrice = price !== undefined && price > 0 ? Number(price) : undefined;
+    const effectiveQuantity = quantity !== undefined && quantity >= 0 ? Number(quantity) : undefined;
+
+    // 1. Try Trading API ReviseInventoryStatus first (fastest, works on all listings)
+    if (listingId || sku) {
+      try {
+        const revised = await this.reviseTradingListing(host, token, {
+          listingId,
+          sku,
+          quantity: effectiveQuantity,
+          price: effectivePrice,
+          siteId: activeSiteId,
+          currency: activeCurrency,
+        });
+
+        if (revised) {
+          return { success: true, listingId };
+        }
+      } catch (revErr: any) {
+        logger.warn(`Trading API revision failed for SKU ${sku}: ${revErr.message}`);
+      }
+    }
+
+    // 2. Fall back to REST Inventory API if Trading API didn't succeed
+    try {
+      const client = this.getClient(host, token, resolved.locale);
+      if (effectiveQuantity !== undefined) {
+        await client.put(`/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}`, {
+          availability: {
+            shipToLocationAvailability: {
+              quantity: Math.max(0, effectiveQuantity),
+            },
+          },
+        }).catch((e: any) => {
+          logger.warn(`REST inventory quantity update returned: ${e.response?.data?.errors?.[0]?.message || e.message}`);
+        });
+      }
+
+      if (effectivePrice !== undefined) {
+        const offRes = await client.get(`/sell/inventory/v1/offer?sku=${encodeURIComponent(sku)}`).catch(() => null);
+        const offers = offRes?.data?.offers || [];
+        const match = offers.find((o: any) => o.marketplaceId === resolved.marketplaceId) || offers[0];
+        if (match?.offerId) {
+          await client.put(`/sell/inventory/v1/offer/${match.offerId}`, {
+            pricingSummary: {
+              price: {
+                value: effectivePrice.toFixed(2),
+                currency: activeCurrency,
+              },
+            },
+            availableQuantity: effectiveQuantity !== undefined ? effectiveQuantity : match.availableQuantity,
+          }).catch((e: any) => {
+            logger.warn(`REST offer price update returned: ${e.response?.data?.errors?.[0]?.message || e.message}`);
+          });
+
+          if (match.status !== 'PUBLISHED') {
+            await client.post(`/sell/inventory/v1/offer/${match.offerId}/publish`).catch(() => {});
+          }
+        }
+      }
+
+      return { success: true, listingId };
+    } catch (restErr: any) {
+      const errMsg = this.formatEbayError(restErr);
+      logger.error(`Failed to update price and inventory on eBay for SKU ${sku}: ${errMsg}`);
+      return { success: false, error: errMsg };
     }
   }
 

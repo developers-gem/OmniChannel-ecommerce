@@ -302,20 +302,23 @@ export class InventoryController {
           if (conn.channelType === ChannelType.EBAY && chProd?.sku) {
             try {
               const { host, token } = await EbayService.getValidCredentials(conn);
+              const { marketplaceId, currency, siteId } = EbayService.resolveMarketplace(conn);
               const existingListingId = chProd.externalListingId || (chProd.externalProductId && /^\d+$/.test(chProd.externalProductId) ? chProd.externalProductId : undefined);
-              const setResult = await EbayService.setInventoryItem(host, token, chProd.sku, {
-                title: chProd.title,
+              const updateResult = await EbayService.updatePriceAndInventory(host, token, {
+                sku: chProd.sku,
+                listingId: existingListingId,
                 quantity: item.availableToAllocate,
                 price: finalPrice,
-                marketplaceId: conn.config?.marketplaceId || (conn.name.toLowerCase().includes('uk') || conn.name.toLowerCase().includes('gem') ? 'EBAY_GB' : undefined),
-                listingId: existingListingId,
+                marketplaceId,
+                currency,
+                siteId,
               });
               await ChannelProduct.findByIdAndUpdate(chProd._id, {
                 $set: {
                   inventoryQuantity: item.availableToAllocate,
                   price: finalPrice,
                   lastSyncedAt: new Date(),
-                  ...(setResult.listingId ? { externalProductId: setResult.listingId, externalListingId: setResult.listingId } : {}),
+                  ...(updateResult.listingId ? { externalProductId: updateResult.listingId, externalListingId: updateResult.listingId } : {}),
                 },
               });
               logger.info(`Auto-propagated inventory & price to eBay for SKU ${chProd.sku} (stock: ${item.availableToAllocate}, price: ${finalPrice})`);
@@ -389,12 +392,66 @@ export class InventoryController {
       const results: any[] = [];
 
       for (const ch of channels) {
-        const { channelConnectionId, price, ebayMarkupPercent } = ch;
+        const { channelConnectionId, stock, price, basePrice, shippingCharge, markupPercent, finalStorePrice, ebayMarkupPercent } = ch;
         const conn = await ChannelConnection.findOne({
           _id: channelConnectionId,
           organizationId: req.tenantId,
         });
         if (!conn) continue;
+
+        // 1. Check if stock was modified
+        const previousStock = item.trackedStock;
+        if (stock !== undefined && !isNaN(Number(stock))) {
+          const newTrackedStock = Number(stock);
+          if (newTrackedStock !== previousStock) {
+            item.trackedStock = newTrackedStock;
+            item.availableToAllocate = Math.max(0, newTrackedStock - (item.reservedStock || 0) - (item.safetyStock || 0));
+            await item.save();
+
+            await InventoryMovement.create({
+              organizationId: req.tenantId,
+              canonicalVariantId: variant._id,
+              changeType: InventoryChangeType.MANUAL_ADJUSTMENT,
+              quantityChanged: newTrackedStock - previousStock,
+              previousTrackedStock: previousStock,
+              newTrackedStock: newTrackedStock,
+              reason: `Inventory & price adjustment for ${conn.name}`,
+              performedBy: req.user?.userId,
+            });
+          }
+        }
+
+        // 2. Check if platform base price or shipping charge modified
+        if (basePrice !== undefined && Number(basePrice) > 0) {
+          variant.retailPrice = Number(basePrice);
+        }
+        if (shippingCharge !== undefined && Number(shippingCharge) >= 0) {
+          variant.shippingCharge = Number(shippingCharge);
+        }
+        await variant.save();
+
+        if (canonicalProduct) {
+          if (basePrice !== undefined && Number(basePrice) > 0 && (!canonicalProduct.defaultRetailPrice || canonicalProduct.defaultRetailPrice <= 0)) {
+            canonicalProduct.defaultRetailPrice = Number(basePrice);
+          }
+          if (shippingCharge !== undefined && Number(shippingCharge) >= 0 && (!canonicalProduct.shippingCharge || canonicalProduct.shippingCharge <= 0)) {
+            canonicalProduct.shippingCharge = Number(shippingCharge);
+          }
+          await canonicalProduct.save();
+        }
+
+        // 3. Compute final store price to push
+        const currentBase = Number(basePrice !== undefined ? basePrice : (variant.retailPrice || 0));
+        const currentShip = Number(shippingCharge !== undefined ? shippingCharge : (variant.shippingCharge || 0));
+        const currentFee = Number(markupPercent !== undefined ? markupPercent : (ebayMarkupPercent !== undefined ? ebayMarkupPercent : (conn.channelType === ChannelType.EBAY ? 15 : (conn.channelType === ChannelType.SHOPIFY ? 5 : 10))));
+        const combined = currentBase + currentShip;
+        const targetPrice = finalStorePrice !== undefined && Number(finalStorePrice) > 0
+          ? Number(finalStorePrice)
+          : (price !== undefined && Number(price) > 0
+              ? Number(price)
+              : (currentFee > 0 ? Math.round(combined * (1 + currentFee / 100) * 100) / 100 : combined));
+
+        const targetStock = item.availableToAllocate;
 
         // SHOPIFY SYNC
         if (conn.channelType === ChannelType.SHOPIFY) {
@@ -406,8 +463,6 @@ export class InventoryController {
               channelConnectionId: conn._id,
             }).populate('channelProductId');
 
-            const targetPrice = price !== undefined ? Number(price) : variant.retailPrice;
-
             if (mapping && mapping.channelProductId) {
               const chProd: any = mapping.channelProductId;
               const invItemId = chProd.rawPayload?.variant?.inventory_item_id;
@@ -417,7 +472,7 @@ export class InventoryController {
                   domain,
                   token,
                   String(invItemId),
-                  item.availableToAllocate
+                  targetStock
                 );
               }
               if (chProd.externalVariantId) {
@@ -430,12 +485,13 @@ export class InventoryController {
               }
 
               chProd.price = targetPrice;
-              chProd.inventoryQuantity = item.availableToAllocate;
+              chProd.inventoryQuantity = targetStock;
               chProd.syncStatus = SyncStatus.SYNCED;
               chProd.lastSyncedAt = new Date();
               await chProd.save();
 
               mapping.status = MappingStatus.MAPPED;
+              mapping.priceModifier = { type: 'PERCENTAGE', value: currentFee };
               mapping.updatedAt = new Date();
               await mapping.save();
 
@@ -444,7 +500,7 @@ export class InventoryController {
                 channelType: conn.channelType,
                 status: 'SYNCED',
                 price: targetPrice,
-                stock: item.availableToAllocate,
+                stock: targetStock,
               });
             } else {
               // Publish new product to Shopify if not mapped yet
@@ -464,7 +520,7 @@ export class InventoryController {
                       sku: variant.sku,
                       barcode: variant.barcode,
                       retailPrice: targetPrice,
-                      stockQuantity: item.availableToAllocate,
+                      stockQuantity: targetStock,
                     },
                   ],
                 });
@@ -479,7 +535,7 @@ export class InventoryController {
                   title: `${shopifyProduct.title} - ${variant.title}`,
                   sku: variant.sku,
                   price: targetPrice,
-                  inventoryQuantity: item.availableToAllocate,
+                  inventoryQuantity: targetStock,
                   status: ChannelProductStatus.ACTIVE,
                   syncStatus: SyncStatus.SYNCED,
                   lastSyncedAt: new Date(),
@@ -493,6 +549,7 @@ export class InventoryController {
                   channelConnectionId: conn._id,
                   channelProductId: channelProd._id,
                   channelType: ChannelType.SHOPIFY,
+                  priceModifier: { type: 'PERCENTAGE', value: currentFee },
                   mappingConfidence: MappingConfidence.EXACT_SKU,
                   syncPrice: true,
                   syncInventory: true,
@@ -504,7 +561,7 @@ export class InventoryController {
                   channelType: conn.channelType,
                   status: 'PUBLISHED_AND_SYNCED',
                   price: targetPrice,
-                  stock: item.availableToAllocate,
+                  stock: targetStock,
                 });
               }
             }
@@ -518,29 +575,12 @@ export class InventoryController {
             });
           }
         }
-        // EBAY SYNC (Live eBay Inventory API push + strict mapping)
+        // EBAY SYNC (Dedicated price & inventory update + live Trading/REST fallback)
         else if (conn.channelType === ChannelType.EBAY) {
-          const targetPrice = price !== undefined ? Number(price) : variant.retailPrice;
           try {
             const { host, token } = await EbayService.getValidCredentials(conn);
-            const marketplaceId = conn.config?.marketplaceId || (conn.name.toLowerCase().includes('uk') ? 'EBAY_GB' : 'EBAY_GB');
+            const { marketplaceId, currency, siteId } = EbayService.resolveMarketplace(conn);
             const images = (canonicalProduct?.images || []).map((img: any) => typeof img === 'string' ? img : img.url).filter(Boolean);
-
-            const setResult = await EbayService.setInventoryItem(host, token, variant.sku, {
-              title: canonicalProduct?.title || variant.title,
-              description: canonicalProduct?.description || variant.title,
-              quantity: item.availableToAllocate,
-              price: targetPrice,
-              images,
-              brand: canonicalProduct?.brand || 'Generic',
-              marketplaceId,
-            });
-
-            if (!setResult.success) {
-              throw new Error(setResult.error || `Failed to push SKU ${variant.sku} to eBay`);
-            }
-
-            const listingId = setResult.listingId || variant.sku;
 
             let mapping = await ProductMapping.findOne({
               organizationId: req.tenantId,
@@ -549,21 +589,62 @@ export class InventoryController {
             }).populate('channelProductId');
 
             let channelProd: any = mapping?.channelProductId;
+            const existingListingId = channelProd?.externalListingId ||
+              (channelProd?.externalProductId && /^\d+$/.test(channelProd.externalProductId) ? channelProd.externalProductId : undefined) ||
+              channelProd?.rawPayload?.listingId;
+            const targetSku = channelProd?.sku || variant.sku;
+
+            // 1. Try dedicated fast price & inventory update first
+            const updateResult = await EbayService.updatePriceAndInventory(host, token, {
+              sku: targetSku,
+              listingId: existingListingId,
+              quantity: targetStock,
+              price: targetPrice,
+              marketplaceId,
+              currency,
+              siteId,
+            });
+
+            let listingId = updateResult.listingId || existingListingId;
+
+            // 2. If dedicated update was unable to revise and item is not yet published, try setInventoryItem to create/publish
+            if (!updateResult.success && !existingListingId) {
+              const setResult = await EbayService.setInventoryItem(host, token, targetSku, {
+                title: canonicalProduct?.title || variant.title,
+                description: canonicalProduct?.description || variant.title,
+                quantity: targetStock,
+                price: targetPrice,
+                images,
+                brand: canonicalProduct?.brand || 'Generic',
+                marketplaceId,
+                listingId: existingListingId,
+              });
+
+              if (setResult.success) {
+                listingId = setResult.listingId || targetSku;
+              } else {
+                throw new Error(setResult.error || updateResult.error || `Failed to push SKU ${targetSku} to eBay`);
+              }
+            }
+
+            listingId = listingId || existingListingId || targetSku;
+
             if (!channelProd) {
               channelProd = await ChannelProduct.create({
                 organizationId: req.tenantId,
                 channelConnectionId: conn._id,
                 channelType: ChannelType.EBAY,
                 externalProductId: listingId,
-                externalVariantId: variant.sku,
+                externalListingId: listingId,
+                externalVariantId: targetSku,
                 title: canonicalProduct?.title || variant.title,
-                sku: variant.sku,
+                sku: targetSku,
                 price: targetPrice,
-                inventoryQuantity: item.availableToAllocate,
+                inventoryQuantity: targetStock,
                 status: ChannelProductStatus.ACTIVE,
                 syncStatus: SyncStatus.SYNCED,
                 lastSyncedAt: new Date(),
-                rawPayload: { listingId, offerId: setResult.offerId, markupPercent: ebayMarkupPercent || 0 },
+                rawPayload: { listingId, markupPercent: currentFee },
               });
 
               await ProductMapping.create({
@@ -573,27 +654,29 @@ export class InventoryController {
                 channelConnectionId: conn._id,
                 channelProductId: channelProd._id,
                 channelType: ChannelType.EBAY,
-                priceModifier: { type: 'FIXED', value: targetPrice },
+                priceModifier: { type: 'PERCENTAGE', value: currentFee },
                 syncPrice: true,
                 syncInventory: true,
                 status: MappingStatus.MAPPED,
               });
             } else {
               channelProd.externalProductId = listingId;
+              if (listingId && /^\d+$/.test(listingId)) {
+                channelProd.externalListingId = listingId;
+              }
               channelProd.price = targetPrice;
-              channelProd.inventoryQuantity = item.availableToAllocate;
+              channelProd.inventoryQuantity = targetStock;
               channelProd.syncStatus = SyncStatus.SYNCED;
               channelProd.lastSyncedAt = new Date();
               channelProd.rawPayload = {
                 ...channelProd.rawPayload,
                 listingId,
-                offerId: setResult.offerId || channelProd.rawPayload?.offerId,
-                markupPercent: ebayMarkupPercent || 0,
+                markupPercent: currentFee,
               };
               await channelProd.save();
 
               mapping!.status = MappingStatus.MAPPED;
-              mapping!.priceModifier = { type: 'FIXED', value: targetPrice };
+              mapping!.priceModifier = { type: 'PERCENTAGE', value: currentFee };
               mapping!.updatedAt = new Date();
               await mapping!.save();
             }
@@ -606,7 +689,7 @@ export class InventoryController {
               channelType: conn.channelType,
               status: 'SYNCED',
               price: targetPrice,
-              stock: item.availableToAllocate,
+              stock: targetStock,
               listingId,
               note: 'Successfully pushed and synchronized to eBay',
             });
@@ -622,14 +705,41 @@ export class InventoryController {
         }
         // OTHER CHANNELS (Amazon, Custom, etc.)
         else {
-          const targetPrice = price !== undefined ? Number(price) : variant.retailPrice;
-          results.push({
-            channel: conn.name,
-            channelType: conn.channelType,
-            status: 'SYNCED',
-            price: targetPrice,
-            stock: item.availableToAllocate,
-          });
+          try {
+            let mapping = await ProductMapping.findOne({
+              organizationId: req.tenantId,
+              canonicalVariantId: variant._id,
+              channelConnectionId: conn._id,
+            }).populate('channelProductId');
+
+            if (mapping && mapping.channelProductId) {
+              const chProd: any = mapping.channelProductId;
+              chProd.price = targetPrice;
+              chProd.inventoryQuantity = targetStock;
+              chProd.syncStatus = SyncStatus.SYNCED;
+              chProd.lastSyncedAt = new Date();
+              await chProd.save();
+
+              mapping.priceModifier = { type: 'PERCENTAGE', value: currentFee };
+              mapping.updatedAt = new Date();
+              await mapping.save();
+            }
+
+            results.push({
+              channel: conn.name,
+              channelType: conn.channelType,
+              status: 'SYNCED',
+              price: targetPrice,
+              stock: targetStock,
+            });
+          } catch (customErr: any) {
+            results.push({
+              channel: conn.name,
+              channelType: conn.channelType,
+              status: 'FAILED',
+              error: customErr.message,
+            });
+          }
         }
       }
 

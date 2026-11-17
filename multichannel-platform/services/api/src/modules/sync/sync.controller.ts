@@ -232,23 +232,26 @@ export class SyncController {
               } else if (conn?.channelType === ChannelType.EBAY && chProd && variant) {
                 try {
                   const { host, token } = await EbayService.getValidCredentials(conn);
+                  const { marketplaceId, currency, siteId } = EbayService.resolveMarketplace(conn);
                   const invItem = await InventoryItem.findOne({
                     organizationId: req.tenantId,
                     canonicalVariantId: variant._id,
                   });
                   if (invItem && chProd.sku) {
                     const existingListingId = chProd.externalListingId || (chProd.externalProductId && /^\d+$/.test(chProd.externalProductId) ? chProd.externalProductId : undefined);
-                    const setResult = await EbayService.setInventoryItem(host, token, chProd.sku, {
-                      title: chProd.title,
-                      quantity: invItem.availableToAllocate,
-                      price: variant.retailPrice,
+                    const updateResult = await EbayService.updatePriceAndInventory(host, token, {
+                      sku: chProd.sku,
                       listingId: existingListingId,
+                      quantity: invItem.availableToAllocate,
+                      marketplaceId,
+                      currency,
+                      siteId,
                     });
-                    if (setResult?.success) {
+                    if (updateResult?.success || existingListingId) {
                       chProd.inventoryQuantity = invItem.availableToAllocate;
                       chProd.lastSyncedAt = new Date();
-                      if (setResult.listingId) {
-                        chProd.externalListingId = setResult.listingId;
+                      if (updateResult.listingId) {
+                        chProd.externalListingId = updateResult.listingId;
                       }
                       await chProd.save();
                       syncedCount++;
@@ -327,18 +330,22 @@ export class SyncController {
               } else if (conn?.channelType === ChannelType.EBAY && chProd?.sku && variant) {
                 try {
                   const { host, token } = await EbayService.getValidCredentials(conn);
+                  const { marketplaceId, currency, siteId } = EbayService.resolveMarketplace(conn);
                   const existingListingId = chProd.externalListingId || (chProd.externalProductId && /^\d+$/.test(chProd.externalProductId) ? chProd.externalProductId : undefined);
-                  const setResult = await EbayService.setInventoryItem(host, token, chProd.sku, {
-                    title: chProd.title,
-                    quantity: chProd.inventoryQuantity || 0,
-                    price: finalPrice,
+                  const updateResult = await EbayService.updatePriceAndInventory(host, token, {
+                    sku: chProd.sku,
                     listingId: existingListingId,
+                    price: finalPrice,
+                    quantity: chProd.inventoryQuantity || 0,
+                    marketplaceId,
+                    currency,
+                    siteId,
                   });
-                  if (setResult?.success) {
+                  if (updateResult?.success || existingListingId) {
                     chProd.price = finalPrice;
                     chProd.lastSyncedAt = new Date();
-                    if (setResult.listingId) {
-                      chProd.externalListingId = setResult.listingId;
+                    if (updateResult.listingId) {
+                      chProd.externalListingId = updateResult.listingId;
                     }
                     await chProd.save();
                     syncedCount++;

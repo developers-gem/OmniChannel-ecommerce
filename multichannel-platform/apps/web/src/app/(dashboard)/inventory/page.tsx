@@ -30,6 +30,8 @@ import {
   AlertCircle,
   ChevronLeft,
   ChevronRight,
+  Percent,
+  UploadCloud,
 } from 'lucide-react';
 
 import { useCurrency } from '@/lib/currency';
@@ -127,6 +129,64 @@ export default function InventoryPage() {
   >({});
   const [syncSuccessBanner, setSyncSuccessBanner] = useState<string | null>(null);
 
+  // Store-level adjustment configurations for the Adjust modal
+  const [storeAdjustConfigs, setStoreAdjustConfigs] = useState<
+    Record<
+      string,
+      {
+        enabled: boolean;
+        stock: number;
+        basePrice: number;
+        shippingCharge: number;
+        markupPercent: number;
+        customMarkup: string;
+        isPriceModified: boolean;
+      }
+    >
+  >({});
+  const [syncingStoreId, setSyncingStoreId] = useState<string | null>(null);
+
+  const getChannelBadge = (type: string) => {
+    switch (type?.toUpperCase()) {
+      case 'SHOPIFY':
+        return {
+          label: 'Shopify',
+          icon: '🛍️',
+          bg: 'bg-emerald-950/80 text-emerald-400 border-emerald-800/80',
+          borderActive: 'border-emerald-500 bg-emerald-950/20 shadow-emerald-500/10',
+          borderInactive: 'border-slate-800 bg-slate-950/40 opacity-60',
+          defaultFee: 5,
+        };
+      case 'EBAY':
+        return {
+          label: 'eBay',
+          icon: '🏷️',
+          bg: 'bg-amber-950/80 text-amber-400 border-amber-800/80',
+          borderActive: 'border-amber-500 bg-amber-950/20 shadow-amber-500/10',
+          borderInactive: 'border-slate-800 bg-slate-950/40 opacity-60',
+          defaultFee: 15,
+        };
+      case 'AMAZON':
+        return {
+          label: 'Amazon',
+          icon: '📦',
+          bg: 'bg-yellow-950/80 text-yellow-400 border-yellow-800/80',
+          borderActive: 'border-yellow-500 bg-yellow-950/20 shadow-yellow-500/10',
+          borderInactive: 'border-slate-800 bg-slate-950/40 opacity-60',
+          defaultFee: 15,
+        };
+      default:
+        return {
+          label: 'Custom Store',
+          icon: '🌐',
+          bg: 'bg-purple-950/80 text-purple-400 border-purple-800/80',
+          borderActive: 'border-purple-500 bg-purple-950/20 shadow-purple-500/10',
+          borderInactive: 'border-slate-800 bg-slate-950/40 opacity-60',
+          defaultFee: 10,
+        };
+    }
+  };
+
   // Fetch Inventory items
   const { data: inventoryData, isLoading: inventoryLoading } = useQuery({
     queryKey: ['inventory-items'],
@@ -171,6 +231,7 @@ export default function InventoryPage() {
       queryClient.invalidateQueries({ queryKey: ['product-mappings'] });
       setSyncSuccessBanner('Channels successfully synchronized with latest inventory & pricing data!');
       setSyncItem(null);
+      setAdjustItem(null);
       setTimeout(() => setSyncSuccessBanner(null), 6000);
     },
   });
@@ -239,6 +300,98 @@ export default function InventoryPage() {
       shippingCharge: item.shippingCharge ?? 0,
       status: item.status || 'ACTIVE',
       reason: 'Manual inventory & details update',
+    });
+
+    // Initialize multi-store cards for mapped / connected storefronts
+    const configs: Record<string, any> = {};
+    const basePrice = item.retailPrice ?? 0;
+    const shippingCharge = item.shippingCharge ?? 0;
+    const initialStock = item.availableToAllocate ?? item.trackedStock ?? 0;
+
+    (item.channels || []).forEach((ch) => {
+      const badge = getChannelBadge(ch.channelType);
+      configs[ch.connectionId] = {
+        enabled: true,
+        stock: ch.channelStock !== null && ch.channelStock !== undefined ? ch.channelStock : initialStock,
+        basePrice: basePrice,
+        shippingCharge: shippingCharge,
+        markupPercent: badge.defaultFee,
+        customMarkup: '',
+        isPriceModified: false,
+      };
+    });
+    setStoreAdjustConfigs(configs);
+  };
+
+  // Sync a single store from its individual card button
+  const handleSyncSingleStore = (connectionId: string) => {
+    if (!adjustItem) return;
+    const conf = storeAdjustConfigs[connectionId];
+    if (!conf) return;
+
+    setSyncingStoreId(connectionId);
+    const variantId = adjustItem.canonicalVariantId?._id || adjustItem.canonicalVariantId;
+
+    const base = Number(conf.basePrice) || 0;
+    const ship = Number(conf.shippingCharge) || 0;
+    const fee = Number(conf.markupPercent) || 0;
+    const combined = base + ship;
+    const finalPrice = parseFloat((combined * (1 + fee / 100)).toFixed(2));
+
+    syncChannelsMutation.mutate(
+      {
+        variantId,
+        channels: [
+          {
+            channelConnectionId: connectionId,
+            stock: Number(conf.stock),
+            basePrice: base,
+            shippingCharge: ship,
+            markupPercent: fee,
+            finalStorePrice: finalPrice,
+          },
+        ],
+      },
+      {
+        onSettled: () => {
+          setSyncingStoreId(null);
+        },
+      }
+    );
+  };
+
+  // Master sync button for all selected stores
+  const handleSyncAllSelectedStores = () => {
+    if (!adjustItem) return;
+    const variantId = adjustItem.canonicalVariantId?._id || adjustItem.canonicalVariantId;
+
+    const selectedPayload = Object.entries(storeAdjustConfigs)
+      .filter(([_, conf]) => conf.enabled)
+      .map(([connectionId, conf]) => {
+        const base = Number(conf.basePrice) || 0;
+        const ship = Number(conf.shippingCharge) || 0;
+        const fee = Number(conf.markupPercent) || 0;
+        const combined = base + ship;
+        const finalPrice = parseFloat((combined * (1 + fee / 100)).toFixed(2));
+
+        return {
+          channelConnectionId: connectionId,
+          stock: Number(conf.stock),
+          basePrice: base,
+          shippingCharge: ship,
+          markupPercent: fee,
+          finalStorePrice: finalPrice,
+        };
+      });
+
+    if (selectedPayload.length === 0) {
+      alert('Please select at least one store to synchronize.');
+      return;
+    }
+
+    syncChannelsMutation.mutate({
+      variantId,
+      channels: selectedPayload,
     });
   };
 
@@ -858,177 +1011,443 @@ export default function InventoryPage() {
         </div>
       )}
 
-      {/* ADJUST / EDIT MODAL (Shows ALL fields for editing) */}
+      {/* ADJUST INVENTORY & PRICING MODAL (Multi-Store Cards matching Screenshot 2) */}
       {adjustItem && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4 animate-in fade-in zoom-in-95 duration-150">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <div>
-                <h3 className="text-base font-bold text-white flex items-center gap-2">
-                  <Sliders className="w-4 h-4 text-brand-400" />
-                  <span>Adjust Inventory & Product Details</span>
-                </h3>
-                <p className="text-xs text-slate-400 mt-0.5 font-mono">
-                  SKU: <strong className="text-brand-300">{adjustItem.sku}</strong> ({adjustItem.variantTitle})
-                </p>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-4xl w-full p-6 shadow-2xl space-y-4 animate-in fade-in zoom-in-95 duration-150 max-h-[92vh] flex flex-col">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3 shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-brand-500/20 border border-brand-500/40 flex items-center justify-center text-brand-400 shrink-0">
+                  <Sliders className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Adjust Store Inventory &amp; Pricing</h3>
+                  <p className="text-xs text-slate-400 mt-0.5 font-mono">
+                    SKU: <strong className="text-brand-300">{adjustItem.sku}</strong> &bull; {adjustItem.variantTitle} {adjustItem.productTitle !== adjustItem.variantTitle ? `(${adjustItem.productTitle})` : ''}
+                  </p>
+                </div>
               </div>
               <button
                 type="button"
                 onClick={() => setAdjustItem(null)}
-                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleAdjustSubmit} className="space-y-4">
-              {/* Stock Fields */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                    Physical Tracked Stock *
-                  </label>
-                  <input
-                    type="number"
-                    required
-                    min={0}
-                    value={adjustForm.trackedStock}
-                    onChange={(e) =>
-                      setAdjustForm({ ...adjustForm, trackedStock: parseInt(e.target.value, 10) || 0 })
-                    }
-                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono text-xs focus:border-brand-500 focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                    Safety Buffer Stock
-                  </label>
-                  <input
-                    type="number"
-                    min={0}
-                    value={adjustForm.safetyStock}
-                    onChange={(e) =>
-                      setAdjustForm({ ...adjustForm, safetyStock: parseInt(e.target.value, 10) || 0 })
-                    }
-                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono text-xs focus:border-brand-500 focus:outline-none"
-                  />
-                </div>
-              </div>
-
-              {/* Price Fields */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                    Retail Price ({symbol}) *
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min={0}
-                    required
-                    value={adjustForm.retailPrice}
-                    onChange={(e) =>
-                      setAdjustForm({ ...adjustForm, retailPrice: parseFloat(e.target.value) || 0 })
-                    }
-                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono text-xs focus:border-brand-500 focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                    Cost Price ({symbol})
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min={0}
-                    value={adjustForm.costPrice}
-                    onChange={(e) =>
-                      setAdjustForm({ ...adjustForm, costPrice: parseFloat(e.target.value) || 0 })
-                    }
-                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono text-xs focus:border-brand-500 focus:outline-none"
-                  />
-                </div>
-              </div>
-
-              {/* Shipping Charges & Status */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                    Shipping Charges ({symbol})
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min={0}
-                    value={adjustForm.shippingCharge}
-                    onChange={(e) =>
-                      setAdjustForm({ ...adjustForm, shippingCharge: parseFloat(e.target.value) || 0 })
-                    }
-                    placeholder="0.00 for Free Shipping"
-                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono text-xs focus:border-brand-500 focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                    Catalog Status
-                  </label>
-                  <select
-                    value={adjustForm.status}
-                    onChange={(e) => setAdjustForm({ ...adjustForm, status: e.target.value })}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs focus:border-brand-500 focus:outline-none"
-                  >
-                    <option value="ACTIVE">ACTIVE</option>
-                    <option value="DRAFT">DRAFT</option>
-                    <option value="ARCHIVED">ARCHIVED</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Reason for Audit */}
+            {/* Master Catalog Values Bar */}
+            <div className="grid grid-cols-3 gap-3 bg-slate-950 p-3.5 rounded-xl border border-slate-800 text-xs font-mono shrink-0">
               <div>
-                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                  Reason for Adjustment *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={adjustForm.reason}
-                  onChange={(e) => setAdjustForm({ ...adjustForm, reason: e.target.value })}
-                  placeholder="e.g. Physical cycle count, Supplier restock, Price revision"
-                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs focus:border-brand-500 focus:outline-none"
-                />
+                <span className="text-[10px] text-slate-400 uppercase block">Available Stock</span>
+                <span className="text-sm font-bold text-emerald-400">{adjustItem.availableToAllocate} units</span>
               </div>
-
-              {/* Notice that saving triggers Data Changed status */}
-              <div className="p-3 rounded-xl bg-brand-500/10 border border-brand-500/20 text-xs text-brand-300 flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-brand-400 shrink-0" />
-                <span>
-                  Updating these fields will update your master catalog and flag this SKU as &ldquo;Data Changed&rdquo; so you can push updates to all your sales channels.
+              <div>
+                <span className="text-[10px] text-slate-400 uppercase block">Master Retail Price</span>
+                <span className="text-sm font-bold text-white">{format(adjustItem.retailPrice)}</span>
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-400 uppercase block">Shipping Charges</span>
+                <span className="text-sm font-bold text-slate-300">
+                  {adjustItem.shippingCharge > 0 ? format(adjustItem.shippingCharge) : 'Free'}
                 </span>
               </div>
+            </div>
 
-              <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
+            {/* Store Selection & Actions Bar */}
+            <div className="flex items-center justify-between text-xs shrink-0">
+              <span className="font-bold text-slate-300 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                <Globe className="w-3.5 h-3.5 text-brand-400" />
+                <span>Synced Sales Channels ({Object.keys(storeAdjustConfigs).length})</span>
+              </span>
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => setAdjustItem(null)}
-                  className="px-4 py-2 text-xs text-slate-400 hover:text-white transition"
+                  onClick={() => {
+                    setStoreAdjustConfigs((prev) => {
+                      const next = { ...prev };
+                      Object.keys(next).forEach((k) => (next[k] = { ...next[k], enabled: true }));
+                      return next;
+                    });
+                  }}
+                  className="text-[11px] text-brand-400 hover:text-brand-300 font-semibold cursor-pointer"
                 >
-                  Cancel
+                  Select All
                 </button>
+                <span className="text-slate-600">&bull;</span>
                 <button
-                  type="submit"
-                  disabled={adjustMutation.isPending}
-                  className="bg-brand-600 hover:bg-brand-500 text-white text-xs font-bold px-5 py-2.5 rounded-xl transition shadow-lg shadow-brand-600/30 flex items-center gap-2 cursor-pointer"
+                  type="button"
+                  onClick={() => {
+                    setStoreAdjustConfigs((prev) => {
+                      const next = { ...prev };
+                      Object.keys(next).forEach((k) => (next[k] = { ...next[k], enabled: false }));
+                      return next;
+                    });
+                  }}
+                  className="text-[11px] text-slate-400 hover:text-slate-300 cursor-pointer"
                 >
-                  {adjustMutation.isPending ? (
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <Check className="w-3.5 h-3.5" />
-                  )}
-                  <span>Save Changes & Log Movement</span>
+                  Clear All
                 </button>
               </div>
-            </form>
+            </div>
+
+            {/* Channels Cards Grid */}
+            <div className="flex-1 overflow-y-auto pr-1 space-y-4">
+              {(() => {
+                const mappedChannels = (adjustItem.channels || []).filter((ch) => ch.isMapped);
+                const channelsToRender = mappedChannels.length > 0 ? mappedChannels : (adjustItem.channels || []);
+
+                if (channelsToRender.length === 0) {
+                  return (
+                    <div className="p-8 rounded-xl bg-slate-950 border border-slate-800 text-center text-xs text-slate-400">
+                      <p className="font-semibold text-slate-300">No active sales channels found for this product.</p>
+                      <p className="text-[11px] text-slate-500 mt-1">
+                        Connect Shopify or eBay under Channel Integrations, or map this product to your channels on the Products page.
+                      </p>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {channelsToRender.map((ch) => {
+                      const badge = getChannelBadge(ch.channelType);
+                      const conf = storeAdjustConfigs[ch.connectionId] || {
+                        enabled: true,
+                        stock: ch.channelStock ?? adjustItem.availableToAllocate ?? adjustItem.trackedStock ?? 0,
+                        basePrice: adjustItem.retailPrice ?? 0,
+                        shippingCharge: adjustItem.shippingCharge ?? 0,
+                        markupPercent: badge.defaultFee,
+                        customMarkup: '',
+                        isPriceModified: false,
+                      };
+
+                      const basePrice = Number(conf.basePrice) || 0;
+                      const shippingCharge = Number(conf.shippingCharge) || 0;
+                      const feePercent = Number(conf.markupPercent) || 0;
+                      const combinedBase = basePrice + shippingCharge;
+                      const feeAmount = feePercent > 0 ? parseFloat((combinedBase * (feePercent / 100)).toFixed(2)) : 0;
+                      const finalStorePrice = parseFloat((combinedBase + feeAmount).toFixed(2));
+
+                      return (
+                        <div
+                          key={ch.connectionId}
+                          className={`p-4 rounded-2xl border-2 transition flex flex-col justify-between ${
+                            conf.enabled ? badge.borderActive : badge.borderInactive
+                          }`}
+                        >
+                          <div>
+                            {/* Store Header */}
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-2">
+                                <span className="text-xl">{badge.icon}</span>
+                                <span className="font-bold text-slate-200 text-sm line-clamp-1">
+                                  {ch.name}
+                                </span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setStoreAdjustConfigs((prev) => ({
+                                    ...prev,
+                                    [ch.connectionId]: {
+                                      ...prev[ch.connectionId],
+                                      enabled: !prev[ch.connectionId]?.enabled,
+                                    },
+                                  }));
+                                }}
+                                className={`w-6 h-6 rounded-md flex items-center justify-center border transition cursor-pointer ${
+                                  conf.enabled
+                                    ? 'bg-emerald-600 border-emerald-500 text-white shadow-sm'
+                                    : 'bg-slate-800 border-slate-700 text-transparent'
+                                }`}
+                                title={conf.enabled ? 'Deselect store' : 'Select store for master sync'}
+                              >
+                                <Check className="w-4 h-4 stroke-[3]" />
+                              </button>
+                            </div>
+
+                            <div className="mt-2 flex items-center gap-2">
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${badge.bg}`}>
+                                {badge.label}
+                              </span>
+                              <span className="text-[10px] text-emerald-400 flex items-center gap-1 font-medium">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                                <span>Active</span>
+                              </span>
+                              {ch.isMapped && (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-400 bg-emerald-950/60 border border-emerald-800/60 px-2 py-0.5 rounded-md ml-auto">
+                                  <Check className="w-2.5 h-2.5" />
+                                  <span>Already Mapped</span>
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="text-[11px] text-slate-400 font-mono mt-1.5 truncate">
+                              {ch.channelType === 'SHOPIFY'
+                                ? 'amazingink-1.myshopify.com'
+                                : ch.channelType === 'EBAY'
+                                ? 'api.ebay.com'
+                                : ch.name}
+                            </div>
+
+                            {/* Adjustment Controls Container */}
+                            <div className="mt-3.5 space-y-3 bg-slate-900/90 border border-slate-800/90 rounded-xl p-3.5">
+                              {/* Stock Input */}
+                              <div>
+                                <label className="block text-[10px] font-bold text-slate-300 uppercase tracking-wider mb-1">
+                                  Inventory Stock (Units)
+                                </label>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  value={conf.stock}
+                                  onChange={(e) => {
+                                    const val = parseInt(e.target.value, 10) || 0;
+                                    setStoreAdjustConfigs((prev) => ({
+                                      ...prev,
+                                      [ch.connectionId]: {
+                                        ...prev[ch.connectionId],
+                                        stock: val,
+                                      },
+                                    }));
+                                  }}
+                                  className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-white font-mono text-xs focus:border-brand-500 focus:outline-none"
+                                />
+                              </div>
+
+                              {/* Base Price & Shipping Inputs */}
+                              <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                  <label className="block text-[10px] font-bold text-slate-300 uppercase tracking-wider mb-1">
+                                    Platform Price ({symbol})
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    min={0}
+                                    value={conf.basePrice}
+                                    onChange={(e) => {
+                                      const val = parseFloat(e.target.value) || 0;
+                                      const isModified = val !== (adjustItem.retailPrice || 0);
+                                      setStoreAdjustConfigs((prev) => ({
+                                        ...prev,
+                                        [ch.connectionId]: {
+                                          ...prev[ch.connectionId],
+                                          basePrice: val,
+                                          isPriceModified: isModified,
+                                        },
+                                      }));
+                                    }}
+                                    className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-white font-mono text-xs focus:border-brand-500 focus:outline-none"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-[10px] font-bold text-slate-300 uppercase tracking-wider mb-1">
+                                    Shipping Charge ({symbol})
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    min={0}
+                                    value={conf.shippingCharge}
+                                    onChange={(e) => {
+                                      const val = parseFloat(e.target.value) || 0;
+                                      setStoreAdjustConfigs((prev) => ({
+                                        ...prev,
+                                        [ch.connectionId]: {
+                                          ...prev[ch.connectionId],
+                                          shippingCharge: val,
+                                        },
+                                      }));
+                                    }}
+                                    placeholder="0.00"
+                                    className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-white font-mono text-xs focus:border-brand-500 focus:outline-none"
+                                  />
+                                </div>
+                              </div>
+
+                              {/* Price Warning Notice (Shown when price is modified) */}
+                              {conf.isPriceModified && (
+                                <div className="p-2.5 rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-300 text-[11px] leading-relaxed flex items-start gap-2">
+                                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                                  <div>
+                                    <strong className="block text-amber-200 font-semibold">Platform Base Price Warning:</strong>
+                                    The price entered ({format(conf.basePrice)}) is your Master Platform base price, not the store price. {ch.name} will receive the Final Store Price with platform charges (+{conf.markupPercent}%) included ({format(finalStorePrice)}).
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Platform Charges Selection */}
+                              <div className="pt-2 border-t border-slate-800 space-y-2">
+                                <div className="flex items-center justify-between text-[11px]">
+                                  <span className="font-bold text-slate-300 uppercase tracking-wider text-[10px] flex items-center gap-1">
+                                    <Percent className="w-3 h-3 text-brand-400" />
+                                    <span>% Platform Charges</span>
+                                  </span>
+                                  <span className="font-mono font-bold text-brand-400">
+                                    +{conf.markupPercent}%
+                                  </span>
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-1">
+                                  {[0, 5, 10, 12, 15].map((preset) => {
+                                    const isCurrent = conf.markupPercent === preset && !conf.customMarkup;
+                                    return (
+                                      <button
+                                        key={preset}
+                                        type="button"
+                                        onClick={() => {
+                                          setStoreAdjustConfigs((prev) => ({
+                                            ...prev,
+                                            [ch.connectionId]: {
+                                              ...prev[ch.connectionId],
+                                              markupPercent: preset,
+                                              customMarkup: '',
+                                            },
+                                          }));
+                                        }}
+                                        className={`px-2 py-0.5 rounded text-[10px] font-bold border transition cursor-pointer ${
+                                          isCurrent
+                                            ? 'bg-emerald-600 border-emerald-500 text-white shadow-sm'
+                                            : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-white'
+                                        }`}
+                                      >
+                                        {preset}%
+                                      </button>
+                                    );
+                                  })}
+
+                                  <div className="flex items-center gap-1 ml-auto">
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      max="100"
+                                      step="0.5"
+                                      placeholder="Custom"
+                                      value={conf.customMarkup}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        const parsed = parseFloat(val);
+                                        setStoreAdjustConfigs((prev) => ({
+                                          ...prev,
+                                          [ch.connectionId]: {
+                                            ...prev[ch.connectionId],
+                                            customMarkup: val,
+                                            markupPercent: !isNaN(parsed) && parsed >= 0 ? parsed : prev[ch.connectionId].markupPercent,
+                                          },
+                                        }));
+                                      }}
+                                      className="w-16 px-1.5 py-0.5 rounded text-[10px] font-mono bg-slate-950 border border-slate-700 text-white placeholder-slate-500 outline-none focus:border-brand-500"
+                                    />
+                                    <span className="text-[10px] text-slate-400">%</span>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Live Price Breakdown Breakdown */}
+                              <div className="pt-2 border-t border-slate-800/80 space-y-1">
+                                <div className="flex items-center justify-between text-[10px] text-slate-400">
+                                  <span>Platform Price:</span>
+                                  <span className="font-mono text-slate-300">{format(basePrice)}</span>
+                                </div>
+                                <div className="flex items-center justify-between text-[10px] text-slate-400">
+                                  <span>Shipping Charge:</span>
+                                  <span className="font-mono text-slate-300">
+                                    {shippingCharge > 0 ? format(shippingCharge) : '€0.00 (Free)'}
+                                  </span>
+                                </div>
+                                <div className="flex items-center justify-between text-[10px] text-slate-400">
+                                  <span>Platform Fee (+{feePercent}%):</span>
+                                  <span className="font-mono text-amber-400">+{format(feeAmount)}</span>
+                                </div>
+                                <div className="flex items-center justify-between text-xs pt-1 border-t border-slate-800/60">
+                                  <span className="font-bold text-white">Final Store Price:</span>
+                                  <span className="font-mono font-extrabold text-emerald-400 text-sm">
+                                    {format(finalStorePrice)}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Individual Store Sync Button */}
+                          <div className="mt-3 pt-2.5 border-t border-slate-800/80">
+                            <button
+                              type="button"
+                              disabled={syncingStoreId !== null || syncChannelsMutation.isPending}
+                              onClick={() => handleSyncSingleStore(ch.connectionId)}
+                              className="w-full py-2 px-3 rounded-xl bg-slate-800 hover:bg-brand-600 text-white text-xs font-semibold border border-slate-700 hover:border-brand-500 transition shadow-sm flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                            >
+                              {syncingStoreId === ch.connectionId ? (
+                                <>
+                                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-brand-300" />
+                                  <span>Updating {ch.name}...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <RefreshCw className="w-3.5 h-3.5 text-brand-400" />
+                                  <span>Update &amp; Sync This Store</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Modal Footer with Master Action Button */}
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-slate-800 shrink-0">
+              {(() => {
+                const selectedCount = Object.values(storeAdjustConfigs).filter((c) => c.enabled).length;
+                return (
+                  <>
+                    <div className="text-xs text-slate-400">
+                      {selectedCount > 0 ? (
+                        <span>
+                          Ready to push inventory &amp; price updates to <strong className="text-white">{selectedCount}</strong> channel storefront{selectedCount > 1 ? 's' : ''}. Master Catalog prices remain safe and untouched.
+                        </span>
+                      ) : (
+                        <span className="text-amber-400">Select at least one sales channel to push.</span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2.5 w-full sm:w-auto justify-end">
+                      <button
+                        type="button"
+                        onClick={() => setAdjustItem(null)}
+                        className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 transition cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        disabled={selectedCount === 0 || syncChannelsMutation.isPending}
+                        onClick={handleSyncAllSelectedStores}
+                        className="flex items-center gap-2 text-xs font-bold px-5 py-2.5 rounded-xl shadow-lg bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/20 transition cursor-pointer disabled:opacity-50"
+                      >
+                        {syncChannelsMutation.isPending && !syncingStoreId ? (
+                          <>
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                            <span>Updating Channels...</span>
+                          </>
+                        ) : (
+                          <>
+                            <UploadCloud className="w-4 h-4" />
+                            <span>Push / Sync to Channels ({selectedCount})</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
           </div>
         </div>
       )}

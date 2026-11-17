@@ -24,6 +24,72 @@ function sanitizeForCsv(value: any): string {
   return str;
 }
 
+// Robust numeric parser for prices: strips currency symbols ($ € £ ¥ ₹), handles European comma decimals
+export function parseNumericPrice(value: any): { value: number; isSpecified: boolean } {
+  if (value === undefined || value === null) {
+    return { value: 0, isSpecified: false };
+  }
+  if (typeof value === 'number') {
+    if (isNaN(value)) return { value: 0, isSpecified: false };
+    return { value: Math.max(0, Number(value.toFixed(2))), isSpecified: true };
+  }
+  let str = String(value).trim();
+  if (!str) {
+    return { value: 0, isSpecified: false };
+  }
+
+  // Handle European comma formatting vs dot decimal
+  const lastDot = str.lastIndexOf('.');
+  const lastComma = str.lastIndexOf(',');
+  if (lastComma > -1 && lastComma > lastDot) {
+    // Comma is decimal separator (e.g. "12,50" or "1.234,56")
+    str = str.replace(/\./g, '').replace(',', '.');
+  } else if (lastDot > -1 && lastDot > lastComma) {
+    // Dot is decimal separator (e.g. "1,234.56")
+    str = str.replace(/,/g, '');
+  } else if (lastComma > -1 && lastDot === -1) {
+    // Only comma present (e.g. "3,98")
+    str = str.replace(',', '.');
+  }
+
+  // Remove currency symbols and non-numeric chars (keep digits, minus, and dot)
+  str = str.replace(/[^0-9.-]/g, '');
+  if (!str || str === '-' || str === '.') {
+    return { value: 0, isSpecified: false };
+  }
+
+  const num = parseFloat(str);
+  if (isNaN(num)) {
+    return { value: 0, isSpecified: false };
+  }
+
+  return { value: Math.max(0, Number(num.toFixed(2))), isSpecified: true };
+}
+
+// Robust numeric parser for stock quantities
+export function parseNumericStock(value: any): { value: number; isSpecified: boolean } {
+  if (value === undefined || value === null) {
+    return { value: 0, isSpecified: false };
+  }
+  if (typeof value === 'number') {
+    if (isNaN(value)) return { value: 0, isSpecified: false };
+    return { value: Math.max(0, Math.floor(value)), isSpecified: true };
+  }
+  const str = String(value).trim();
+  if (!str) {
+    return { value: 0, isSpecified: false };
+  }
+  const cleanStr = str.replace(/[^0-9-]/g, '');
+  if (!cleanStr || cleanStr === '-') {
+    return { value: 0, isSpecified: false };
+  }
+  const num = parseInt(cleanStr, 10);
+  if (isNaN(num)) {
+    return { value: 0, isSpecified: false };
+  }
+  return { value: Math.max(0, num), isSpecified: true };
+}
+
 const FIELD_CANDIDATES: Record<string, string[]> = {
   sku: ['sku', 'master_sku', 'mastersku', 'variant_sku', 'item_code', 'itemcode', 'product_code', 'code', 'handle', 'id'],
   title: ['title', 'product_title', 'producttitle', 'name', 'product_name', 'productname', 'item_name', 'itemname'],
@@ -215,8 +281,12 @@ async function computeDifferentialComparison(
     const rowIndex = i + 1;
     let sku = (item.sku || '').toUpperCase().trim();
     const title = (item.title || '').trim();
-    const newPrice = Math.max(0, parseFloat(String(item.retailPrice ?? 0).replace(/[^0-9.-]/g, '')) || 0);
-    const newStock = Math.max(0, parseInt(String(item.stock ?? 0).replace(/[^0-9-]/g, ''), 10) || 0);
+
+    const parsedPrice = parseNumericPrice(item.retailPrice);
+    const hasExplicitPrice = item.hasExplicitPrice !== undefined ? Boolean(item.hasExplicitPrice) : parsedPrice.isSpecified;
+
+    const parsedStock = parseNumericStock(item.stock);
+    const hasExplicitStock = item.hasExplicitStock !== undefined ? Boolean(item.hasExplicitStock) : parsedStock.isSpecified;
 
     // Auto-generate clean fallback SKU if title is provided but SKU was empty
     if (!sku && title) {
@@ -239,6 +309,8 @@ async function computeDifferentialComparison(
 
     if (!existingVariant && !cp) {
       newCount++;
+      const newPrice = parsedPrice.value;
+      const newStock = parsedStock.value;
       diffs.push({
         id: item.id || `row-${rowIndex}`,
         rowIndex,
@@ -261,11 +333,30 @@ async function computeDifferentialComparison(
       const oldPrice = Number(existingVariant?.retailPrice ?? (cp?.defaultRetailPrice ?? 0)) || 0;
       const oldStock = Number(inv?.trackedStock ?? 0);
 
-      const priceDiff = Number((newPrice - oldPrice).toFixed(2));
-      const stockDiff = newStock - oldStock;
+      // Price comparison:
+      // If price was NOT explicitly specified in the CSV row, OR if parsed price is <= 0 while oldPrice > 0,
+      // preserve oldPrice so existing catalog pricing is not wiped or falsely flagged as dropping to €0.00
+      let newPrice = oldPrice;
+      let priceChanged = false;
+      let priceDiff = 0;
 
-      const priceChanged = Math.abs(priceDiff) > 0.001;
-      const stockChanged = stockDiff !== 0;
+      if (hasExplicitPrice && parsedPrice.value > 0) {
+        newPrice = parsedPrice.value;
+        priceDiff = Number((newPrice - oldPrice).toFixed(2));
+        priceChanged = Math.abs(priceDiff) > 0.001;
+      }
+
+      // Stock comparison:
+      // If stock was NOT explicitly specified in the CSV row, preserve oldStock
+      let newStock = oldStock;
+      let stockChanged = false;
+      let stockDiff = 0;
+
+      if (hasExplicitStock) {
+        newStock = parsedStock.value;
+        stockDiff = newStock - oldStock;
+        stockChanged = stockDiff !== 0;
+      }
 
       let changeType: 'BOTH_CHANGED' | 'PRICE_CHANGED' | 'STOCK_CHANGED' | 'UNCHANGED';
       if (priceChanged && stockChanged) {
@@ -359,10 +450,20 @@ export class CsvController {
           const category = getRowValue(record, 'category', detectedMapping) || 'General';
           const description = getRowValue(record, 'description', detectedMapping);
           const barcode = getRowValue(record, 'barcode', detectedMapping);
-          const costPrice = Math.max(0, parseFloat(getRowValue(record, 'costPrice', detectedMapping) || '0') || 0);
-          const retailPrice = Math.max(0, parseFloat(getRowValue(record, 'retailPrice', detectedMapping) || '0') || 0);
-          const shippingPrice = Math.max(0, parseFloat(getRowValue(record, 'shippingPrice', detectedMapping) || '0') || 0);
-          const stock = Math.max(0, parseInt(getRowValue(record, 'stock', detectedMapping) || '0', 10) || 0);
+          const rawCost = getRowValue(record, 'costPrice', detectedMapping);
+          const rawRetail = getRowValue(record, 'retailPrice', detectedMapping);
+          const rawShipping = getRowValue(record, 'shippingPrice', detectedMapping);
+          const rawStock = getRowValue(record, 'stock', detectedMapping);
+
+          const parsedCost = parseNumericPrice(rawCost);
+          const parsedRetail = parseNumericPrice(rawRetail);
+          const parsedShipping = parseNumericPrice(rawShipping);
+          const parsedStock = parseNumericStock(rawStock);
+
+          const costPrice = parsedCost.value;
+          const retailPrice = parsedRetail.value;
+          const shippingPrice = parsedShipping.value;
+          const stock = parsedStock.value;
           const images = getRowValue(record, 'images', detectedMapping);
           const tags = getRowValue(record, 'tags', detectedMapping);
 
@@ -389,6 +490,8 @@ export class CsvController {
             retailPrice,
             shippingPrice,
             stock,
+            hasExplicitPrice: parsedRetail.isSpecified,
+            hasExplicitStock: parsedStock.isSpecified,
             images,
             tags,
             raw: record,
@@ -414,6 +517,20 @@ export class CsvController {
 
       // Compute native differential comparison against current database records
       const diffResult = await computeDifferentialComparison(products, req.tenantId);
+
+      // Backfill products array with actual catalog values if fields were omitted in CSV
+      for (let i = 0; i < products.length; i++) {
+        const p = products[i];
+        const diff = diffResult.diffs[i];
+        if (diff) {
+          if (!p.hasExplicitPrice && diff.oldPrice !== null && diff.oldPrice > 0) {
+            p.retailPrice = diff.oldPrice;
+          }
+          if (!p.hasExplicitStock && diff.oldStock !== null) {
+            p.stock = diff.oldStock;
+          }
+        }
+      }
 
       return res.json({
         success: true,
@@ -463,17 +580,33 @@ export class CsvController {
             ...mappingConfig,
           };
 
-          items = records.map((record: any, index: number) => ({
-            id: `row-${index + 1}`,
-            rowIndex: index + 1,
-            sku: getRowValue(record, 'sku', resolvedMapping).toUpperCase(),
-            title: getRowValue(record, 'title', resolvedMapping),
-            brand: getRowValue(record, 'brand', resolvedMapping) || 'Generic',
-            category: getRowValue(record, 'category', resolvedMapping) || 'General',
-            description: getRowValue(record, 'description', resolvedMapping),
-            retailPrice: Math.max(0, parseFloat(getRowValue(record, 'retailPrice', resolvedMapping) || '0') || 0),
-            stock: Math.max(0, parseInt(getRowValue(record, 'stock', resolvedMapping) || '0', 10) || 0),
-          }));
+          items = records.map((record: any, index: number) => {
+            const rawCost = getRowValue(record, 'costPrice', resolvedMapping);
+            const rawRetail = getRowValue(record, 'retailPrice', resolvedMapping);
+            const rawShipping = getRowValue(record, 'shippingPrice', resolvedMapping);
+            const rawStock = getRowValue(record, 'stock', resolvedMapping);
+
+            const parsedCost = parseNumericPrice(rawCost);
+            const parsedRetail = parseNumericPrice(rawRetail);
+            const parsedShipping = parseNumericPrice(rawShipping);
+            const parsedStock = parseNumericStock(rawStock);
+
+            return {
+              id: `row-${index + 1}`,
+              rowIndex: index + 1,
+              sku: getRowValue(record, 'sku', resolvedMapping).toUpperCase(),
+              title: getRowValue(record, 'title', resolvedMapping),
+              brand: getRowValue(record, 'brand', resolvedMapping) || 'Generic',
+              category: getRowValue(record, 'category', resolvedMapping) || 'General',
+              description: getRowValue(record, 'description', resolvedMapping),
+              costPrice: parsedCost.value,
+              retailPrice: parsedRetail.value,
+              shippingPrice: parsedShipping.value,
+              stock: parsedStock.value,
+              hasExplicitPrice: parsedRetail.isSpecified,
+              hasExplicitStock: parsedStock.isSpecified,
+            };
+          });
         }
       }
 
@@ -523,19 +656,34 @@ export class CsvController {
           ...mappingConfig,
         };
 
-        items = records.map((row: any, idx: number) => ({
-          sku: getRowValue(row, 'sku', resolvedMapping).toUpperCase(),
-          title: getRowValue(row, 'title', resolvedMapping),
-          brand: getRowValue(row, 'brand', resolvedMapping) || 'Generic',
-          category: getRowValue(row, 'category', resolvedMapping) || 'General',
-          description: getRowValue(row, 'description', resolvedMapping),
-          barcode: getRowValue(row, 'barcode', resolvedMapping),
-          costPrice: Math.max(0, parseFloat(getRowValue(row, 'costPrice', resolvedMapping) || '0') || 0),
-          retailPrice: Math.max(0, parseFloat(getRowValue(row, 'retailPrice', resolvedMapping) || '0') || 0),
-          stock: Math.max(0, parseInt(getRowValue(row, 'stock', resolvedMapping) || '0', 10) || 0),
-          tags: getRowValue(row, 'tags', resolvedMapping),
-          images: getRowValue(row, 'images', resolvedMapping),
-        }));
+        items = records.map((row: any, idx: number) => {
+          const rawCost = getRowValue(row, 'costPrice', resolvedMapping);
+          const rawRetail = getRowValue(row, 'retailPrice', resolvedMapping);
+          const rawShipping = getRowValue(row, 'shippingPrice', resolvedMapping);
+          const rawStock = getRowValue(row, 'stock', resolvedMapping);
+
+          const parsedCost = parseNumericPrice(rawCost);
+          const parsedRetail = parseNumericPrice(rawRetail);
+          const parsedShipping = parseNumericPrice(rawShipping);
+          const parsedStock = parseNumericStock(rawStock);
+
+          return {
+            sku: getRowValue(row, 'sku', resolvedMapping).toUpperCase(),
+            title: getRowValue(row, 'title', resolvedMapping),
+            brand: getRowValue(row, 'brand', resolvedMapping) || 'Generic',
+            category: getRowValue(row, 'category', resolvedMapping) || 'General',
+            description: getRowValue(row, 'description', resolvedMapping),
+            barcode: getRowValue(row, 'barcode', resolvedMapping),
+            costPrice: parsedCost.value,
+            retailPrice: parsedRetail.value,
+            shippingPrice: parsedShipping.value,
+            stock: parsedStock.value,
+            hasExplicitPrice: parsedRetail.isSpecified,
+            hasExplicitStock: parsedStock.isSpecified,
+            tags: getRowValue(row, 'tags', resolvedMapping),
+            images: getRowValue(row, 'images', resolvedMapping),
+          };
+        });
 
         totalRows = records.length;
         fileSize = Buffer.byteLength(csvContent, 'utf8');
@@ -588,10 +736,21 @@ export class CsvController {
           const category = (item.category || '').trim() || 'General';
           const description = (item.description || '').trim();
           const barcode = (item.barcode || '').trim();
-          const costPrice = Math.max(0, parseFloat(String(item.costPrice || '0')) || 0);
-          const retailPrice = Math.max(0, parseFloat(String(item.retailPrice || '0')) || 0);
-          const shippingPrice = Math.max(0, parseFloat(String(item.shippingPrice || item.shippingCharge || '0')) || 0);
-          const stock = Math.max(0, parseInt(String(item.stock || '0'), 10) || 0);
+          const rawCost = item.costPrice ?? getRowValue(item, 'costPrice', mappingConfig);
+          const rawRetail = item.retailPrice ?? getRowValue(item, 'retailPrice', mappingConfig);
+          const rawShipping = item.shippingPrice ?? item.shippingCharge ?? getRowValue(item, 'shippingPrice', mappingConfig);
+          const rawStock = item.stock ?? getRowValue(item, 'stock', mappingConfig);
+
+          const parsedCost = parseNumericPrice(rawCost);
+          const parsedRetail = parseNumericPrice(rawRetail);
+          const parsedShipping = parseNumericPrice(rawShipping);
+          const parsedStock = parseNumericStock(rawStock);
+
+          const costPrice = parsedCost.value;
+          const retailPrice = parsedRetail.value;
+          const shippingPrice = parsedShipping.value;
+          const stock = parsedStock.value;
+          const hasExplicitStock = item.hasExplicitStock !== undefined ? Boolean(item.hasExplicitStock) : parsedStock.isSpecified;
 
           // If row is completely blank (e.g. trailing blank lines in CSV), skip silently without failing
           const isBlankRow =
@@ -729,10 +888,11 @@ export class CsvController {
             const oldPrice = Number(variant.retailPrice ?? (canonicalProd?.defaultRetailPrice ?? 0)) || 0;
             const oldStock = Number(inv?.trackedStock ?? 0);
 
-            const priceDiff = Number((retailPrice - oldPrice).toFixed(2));
-            const stockDiff = stock - oldStock;
-            const priceChanged = Math.abs(priceDiff) > 0.001;
-            const stockChanged = stockDiff !== 0;
+            // Only count price as changed if a positive retailPrice was explicitly provided and differs from oldPrice
+            const priceChanged = retailPrice > 0 && Math.abs(Number((retailPrice - oldPrice).toFixed(2))) > 0.001;
+            // Only count stock as changed if stock was explicitly provided and differs from oldStock
+            const stockDiff = hasExplicitStock ? stock - oldStock : 0;
+            const stockChanged = hasExplicitStock && stockDiff !== 0;
 
             if (priceChanged && stockChanged) {
               bothChangedCount++;
@@ -754,13 +914,13 @@ export class CsvController {
                 safetyStock: 0,
                 availableToAllocate: stock,
               });
-            } else {
+            } else if (hasExplicitStock) {
               inv.trackedStock = stock;
               inv.availableToAllocate = Math.max(0, stock - (inv.reservedStock || 0) - (inv.safetyStock || 0));
               await inv.save();
             }
 
-            if (stockDiff !== 0) {
+            if (stockChanged && stockDiff !== 0) {
               await InventoryMovement.create({
                 organizationId: req.tenantId,
                 canonicalVariantId: variant._id,
@@ -949,7 +1109,7 @@ export class CsvController {
   static async export(req: Request, res: Response) {
     try {
       const variants = await ProductVariant.find({ organizationId: req.tenantId })
-        .populate('canonicalProductId', 'title brand category status')
+        .populate('canonicalProductId', 'title brand category status defaultRetailPrice defaultCostPrice')
         .lean();
 
       const variantIds = variants.map((v) => v._id);
@@ -961,14 +1121,21 @@ export class CsvController {
         const inv = inventoryItems.find(
           (i) => i.canonicalVariantId?.toString() === v._id?.toString()
         );
+        const costPrice = v.costPrice && Number(v.costPrice) > 0
+          ? Number(v.costPrice)
+          : Number(v.canonicalProductId?.defaultCostPrice ?? 0);
+        const retailPrice = v.retailPrice && Number(v.retailPrice) > 0
+          ? Number(v.retailPrice)
+          : Number(v.canonicalProductId?.defaultRetailPrice ?? 0);
+
         return {
           SKU: sanitizeForCsv(v.sku),
           Title: sanitizeForCsv(v.title || v.canonicalProductId?.title),
           Brand: sanitizeForCsv(v.canonicalProductId?.brand),
           Category: sanitizeForCsv(v.canonicalProductId?.category),
           Barcode: sanitizeForCsv(v.barcode),
-          'Cost Price': sanitizeForCsv(v.costPrice),
-          'Retail Price': sanitizeForCsv(v.retailPrice),
+          'Cost Price': sanitizeForCsv(costPrice),
+          'Retail Price': sanitizeForCsv(retailPrice),
           'Tracked Stock': sanitizeForCsv(inv?.trackedStock ?? 0),
           'Reserved Stock': sanitizeForCsv(inv?.reservedStock ?? 0),
           'Safety Stock': sanitizeForCsv(inv?.safetyStock ?? 0),
