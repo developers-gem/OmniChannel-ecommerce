@@ -1,1 +1,1 @@
-{"version":"1.6.1","results":[[":multichannel-platform/tests/ebay_oauth.test.ts",{"duration":3,"failed":false}]]}
+{"version":"1.6.1","results":[[":multichannel-platform/tests/csv_numeric_differential.test.ts",{"duration":6,"failed":false}],[":multichannel-platform/tests/ebay_oauth.test.ts",{"duration":5,"failed":false}]]}

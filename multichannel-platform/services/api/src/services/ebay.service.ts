@@ -1884,12 +1884,51 @@ export class EbayService {
     for (const item of items) {
       const sku = (item.sku || '').toUpperCase().trim();
       const listingId = String(item.listingId || '').trim();
-      if (sku) activeSkus.add(sku);
-      if (listingId) activeListingIds.add(listingId);
+      const isLiveActive = Boolean(
+        item.isPublished === true ||
+        item.offerStatus === 'PUBLISHED' ||
+        (listingId.length > 0 && !['UNPUBLISHED', 'ENDED', 'INACTIVE', 'OUT_OF_STOCK'].includes(String(item.offerStatus || '').toUpperCase()))
+      );
+      if (isLiveActive) {
+        if (sku) activeSkus.add(sku);
+        if (listingId) activeListingIds.add(listingId);
+      }
     }
 
     for (const item of items) {
       try {
+        const listingId = String(item.listingId || '').trim();
+        const isLiveActive = Boolean(
+          item.isPublished === true ||
+          item.offerStatus === 'PUBLISHED' ||
+          (listingId.length > 0 && !['UNPUBLISHED', 'ENDED', 'INACTIVE', 'OUT_OF_STOCK'].includes(String(item.offerStatus || '').toUpperCase()))
+        );
+
+        // If the item on eBay is ended/unpublished/inactive, reconcile its ChannelProduct to ENDED
+        // and NEVER auto-ingest it into the Master Catalog!
+        if (!isLiveActive) {
+          const sku = (item.sku || '').toUpperCase().trim();
+          if (sku || listingId) {
+            await ChannelProduct.updateMany(
+              {
+                organizationId,
+                channelConnectionId: connection._id,
+                $or: [
+                  ...(sku ? [{ sku }] : []),
+                  ...(listingId ? [{ externalProductId: listingId }, { externalListingId: listingId }] : []),
+                ],
+              },
+              {
+                $set: {
+                  status: ChannelProductStatus.ENDED,
+                  syncStatus: SyncStatus.OUT_OF_SYNC,
+                },
+              }
+            );
+          }
+          continue;
+        }
+
         const { mappedCount } = await this.ingestEbayProduct({
           organizationId,
           connection,

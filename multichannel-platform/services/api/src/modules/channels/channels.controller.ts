@@ -21,12 +21,12 @@ export class ChannelsController {
       const connectionIds = connections.map((c) => c._id);
 
       const listingCounts = await ChannelProduct.aggregate([
-        { $match: { channelConnectionId: { $in: connectionIds }, status: { $nin: [ChannelProductStatus.ENDED, ChannelProductStatus.UNPUBLISHED] } } },
+        { $match: { channelConnectionId: { $in: connectionIds }, status: ChannelProductStatus.ACTIVE } },
         { $group: { _id: '$channelConnectionId', totalListings: { $sum: 1 } } },
       ]);
 
       const productCounts = await ChannelProduct.aggregate([
-        { $match: { channelConnectionId: { $in: connectionIds }, status: { $nin: [ChannelProductStatus.ENDED, ChannelProductStatus.UNPUBLISHED] } } },
+        { $match: { channelConnectionId: { $in: connectionIds }, status: ChannelProductStatus.ACTIVE } },
         {
           $group: {
             _id: {

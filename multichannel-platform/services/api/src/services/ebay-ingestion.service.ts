@@ -132,6 +132,12 @@ export class EbayIngestionService {
       ],
     });
 
+    const isLiveActive = Boolean(
+      ebayItem.isPublished === true ||
+      ebayItem.offerStatus === 'PUBLISHED' ||
+      (listingId && listingId.length > 0 && !['UNPUBLISHED', 'ENDED', 'INACTIVE', 'OUT_OF_STOCK'].includes(String(ebayItem.offerStatus || '').toUpperCase()))
+    );
+
     const channelProductPayload: any = {
       organizationId,
       channelConnectionId: connection._id,
@@ -144,8 +150,8 @@ export class EbayIngestionService {
       barcode: '',
       price,
       inventoryQuantity: quantity,
-      status: ChannelProductStatus.ACTIVE,
-      syncStatus: SyncStatus.SYNCED,
+      status: isLiveActive ? ChannelProductStatus.ACTIVE : ChannelProductStatus.ENDED,
+      syncStatus: isLiveActive ? SyncStatus.SYNCED : SyncStatus.OUT_OF_SYNC,
       lastSyncedAt: new Date(),
       rawPayload: {
         ebayItem: ebayItem.raw || ebayItem,
@@ -185,6 +191,20 @@ export class EbayIngestionService {
     }
 
     if (!canonicalProduct) {
+      // If the item on eBay is ended, unpublished, or inactive, NEVER auto-create a CanonicalProduct in the Master Catalog!
+      if (!isLiveActive) {
+        return {
+          canonicalProductId: null,
+          canonicalVariantId: null,
+          channelProductId: channelProduct._id,
+          mappingId: null,
+          isNewProduct: false,
+          isNewVariant: false,
+          sku: cleanSku,
+          listingId,
+        };
+      }
+
       canonicalProduct = await CanonicalProduct.create({
         organizationId,
         title,
