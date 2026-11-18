@@ -22,4 +22,6 @@ Thumbs.db
 coverage/
 .turbo/
 scratch/
+.env
+.env.example
 
